@@ -73,7 +73,7 @@
   };
   const editorValue = (el) => el.isContentEditable || attr(el, 'contenteditable') === 'true' ? text(el) : String(el.value || '');
   let ownedDraft = null, pendingSubmit = null;
-  const sourceIDs=new WeakMap(),responseRevisions=new WeakMap();
+  const sourceIDs=new WeakMap(),responseRevisions=new WeakMap(),recoveredReplies=new WeakMap();
   let nextSourceID=0,nextRevision=0;
   const sourceID=node=>{if(!sourceIDs.has(node))sourceIDs.set(node,++nextSourceID);return sourceIDs.get(node);};
   const answerCopy = (el) => {
@@ -207,11 +207,16 @@
     const modelContent = model && [...new Set(allElements('[data-turn-role], .chat-turn-container', model))]
       .find(el => visible(el)&&(roleValue(el) === 'model' || el.matches?.('.chat-turn-container.model')));
     const modelCopy=model?answerCopy(modelContent||model):null;
-    const {blocks,remainder}=sourceBlocks(modelCopy);
+    let {blocks,remainder}=sourceBlocks(modelCopy);
     const renderedSource=modelCopy?modelText(modelCopy):'';
     const signature=JSON.stringify([renderedSource,blocks]);
     if(model&&responseRevisions.get(model)?.signature!==signature)responseRevisions.set(model,{signature,revision:++nextRevision});
     const observation=model?responseRevisions.get(model):{};
+    const recovered=model&&recoveredReplies.get(model);
+    if(recovered?.signature===signature){
+      blocks=[{id:sourceID(model),text:recovered.raw,kind:'reply'}];remainder='';
+      observation.analysis={modelSource:recovered.raw,parsedModel:protocol.analyzeReply(recovered.raw,{exactReply:true}),sourceError:''};
+    }else if(recovered)recoveredReplies.delete(model);
     let {modelSource,parsedModel,sourceError}=observation.analysis||{};
     if(!observation.analysis){
       modelSource=String(modelCopy?.textContent||'').trim();
@@ -244,10 +249,44 @@
     return {
       conversationKey: conversationKey(), chatMarkers:chatMarkers(recognized), chatAddress:/^\/(?:app\/)?prompts\/(?!new_chat\b|new\b)[^/]+\/?$/.test(location.pathname||'')?location.pathname:'', generating, controlsPending,
       editorEmpty: candidateEditors.length === 1 && editorValue(candidateEditors[0]) === '',
-      supported: !error, error, modelError, latestModel: model ? { element: model, sourceError, sourceText:modelSource, sourceBlocks:blocks, sourceRemainder:remainder, recoveryRules:parsedModel?.recoveryRules||[], renderedSource, sourceRevision:responseRevisions.get(model).revision, text:parsedModel.kind==='call'?'```helper-call\n'+parsedModel.raw+'\n```':modelSource } : null,
+      supported: !error, error, modelError, latestModel: model ? { element: model, sourceError, sourceText:modelSource, sourceBlocks:blocks, sourceRemainder:remainder, recoveryRules:parsedModel?.recoveryRules||[], ...(recoveredReplies.has(model)?{responseIdentityText:recoveredReplies.get(model).identityText}:{}), renderedSource, sourceRevision:responseRevisions.get(model).revision, text:parsedModel.kind==='call'?'```helper-call\n'+parsedModel.raw+'\n```':modelSource } : null,
       latestUser: user ? { element: user, text: latestUserText, operationId: latestUserOperationId } : null,
       modelAfterUser: !user || recognized.indexOf(model) > recognized.indexOf(user),
     };
+  };
+  const recoverReplySource = async expected => {
+    const before=inspect(),model=before.latestModel?.element;
+    if(!before.supported||before.generating||!model||model!==expected.element||before.latestModel.sourceRevision!==expected.sourceRevision)return false;
+    if(recoveredReplies.has(model))return true;
+    const edit=elements('button',model).filter(button=>hasLabel(button,['edit','редактировать','изменить']));
+    if(edit.length!==1||elements('textarea, [contenteditable="true"]',model).length)return false;
+    const wait=()=>new Promise(resolve=>(document.defaultView?.setTimeout||setTimeout)(resolve,50));
+    let raw,closed=false;
+    edit[0].click();
+    try{
+      for(let attempt=0;attempt<40;attempt++){
+        const inputs=elements('textarea',model);
+        if(inputs.length===1){raw=String(inputs[0].value);break;}
+        if(inputs.length>1)break;
+        await wait();
+      }
+    }finally{
+      const stop=elements('button',model).filter(button=>hasLabel(button,['stop editing','завершить редактирование']));
+      if(stop.length===1){stop[0].click();closed=true;}
+    }
+    if(!closed||raw===undefined)return false;
+    for(let attempt=0;attempt<40;attempt++){
+      const current=inspect();
+      if(current.latestModel?.element!==model||current.generating)return false;
+      if(current.supported&&!elements('textarea',model).length){
+        const observation=responseRevisions.get(model);
+        recoveredReplies.set(model,{signature:observation.signature,raw,identityText:expected.text});
+        observation.revision=expected.sourceRevision;
+        return true;
+      }
+      await wait();
+    }
+    return false;
   };
   const setEditorValue = (editor,value) => {
     if ('value' in editor) {
@@ -573,5 +612,5 @@
     model.appendChild(note);
     return count;
   };
-  return { inspect, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, cleanup, restoreCleanup, annotateContext };
+  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, cleanup, restoreCleanup, annotateContext };
 });

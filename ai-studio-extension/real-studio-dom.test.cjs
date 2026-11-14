@@ -83,6 +83,25 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
     const parsed=WebCodexProtocol.parseCall(current.text,null,tools,{...current,sessionMarker:liveMarker});
     if(parsed.arguments.content!==body)throw Error('v2 data changed '+JSON.stringify({tag,br,body}));cases++;
   }
+  answer.replaceChildren();
+  const ticks=String.fromCharCode(96).repeat(3),recoveryMarker='a'.repeat(32);
+  const rawBody='# План 😀\\n'+ticks+'js\\nconst x = "quoted";\\n'+ticks+'\\n';
+  const rawReply='Сохраняю.\\n\\n'+ticks+'text\\nHELPER_'+recoveryMarker+' write_file\\npath: W:/plan.md\\nif_absent: true\\n---\\n'+rawBody+'\\nEND_'+recoveryMarker+'\\n'+ticks;
+  const brokenCode=document.createElement('pre');brokenCode.textContent=rawReply.slice(rawReply.indexOf('HELPER_'),rawReply.indexOf(ticks+'js'));
+  const editReply=document.createElement('button');editReply.setAttribute('aria-label','Edit');answer.append(brokenCode,editReply);
+  let edits=0;
+  editReply.addEventListener('click',()=>{
+    if(editReply.getAttribute('aria-label')==='Edit'){
+      edits++;editReply.setAttribute('aria-label','Stop editing');const input=document.createElement('textarea');input.value=rawReply;answer.append(input);
+    }else{answer.querySelector('textarea').remove();editReply.setAttribute('aria-label','Edit');}
+  });
+  const brokenReply=adapter.inspect().latestModel;
+  if(!await adapter.recoverReplySource(brokenReply))throw Error('edit source recovery failed');
+  const exactReply=adapter.inspect().latestModel;
+  if(WebCodexProtocol.parseCall(exactReply.text,null,tools,exactReply).arguments.content!==rawBody||exactReply.sourceRevision!==brokenReply.sourceRevision||answer.querySelector('textarea'))throw Error('edit source bytes or restored UI changed');cases++;
+  if(!await adapter.recoverReplySource(exactReply)||edits!==1)throw Error('edit source recovery repeated');cases++;
+  brokenCode.textContent='ordinary reply';
+  if(adapter.inspect().latestModel.sourceBlocks.some(block=>block.kind==='reply'))throw Error('stale edit source was reused');cases++;
   const resultWidget=document.createElement('ms-code-block'),resultHeader=document.createElement('header'),resultBody=document.createElement('pre');
   resultHeader.textContent='Helper-result';resultBody.textContent=JSON.stringify({type:'helper-result',operation_id:'op-visible',result:{ok:true}});
   resultWidget.append(resultHeader,resultBody);user.append(resultWidget);
@@ -169,5 +188,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:91');t.diagnostic('91 scenarios passed in installed Chrome, including exact delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
+  assert.equal(result,'PASS:94');t.diagnostic('94 scenarios passed in installed Chrome, including exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });

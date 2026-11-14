@@ -51,9 +51,10 @@ test('a result sent with native Run is confirmed without another upload or submi
 function harness({manualClock=false}={}) {
   const listeners = {}, sent = [], timers = new Map(), state = { supported: true, generating: false, editorEmpty: true, conversationKey: 'active-chat', latestModel: { text: 'old answer' }, latestUser: null };
   let timerId = 0, now=10000, submitted = [], staged = [], observerCallback, accepted = true, sendHandler, disconnected = false, cleared = false, submitHandler, uploadHandler;
-  const uploaded=[],preparedMarkers=[];
+  const uploaded=[],preparedMarkers=[];let recoveryHandler;
   class TestDate extends Date {static now(){return now;}}
   const adapter = {
+    recoverReplySource:async model=>recoveryHandler?recoveryHandler(model):false,
     inspect: () => ({ ...state, latestModel: state.latestModel && { ...state.latestModel }, latestUser: state.latestUser && { ...state.latestUser } }),
     isSubmitControl:button=>{
       if(!button)return false;
@@ -92,7 +93,7 @@ function harness({manualClock=false}={}) {
     }
     throw Error('timers did not settle');
   };
-  return { state, sent, staged, submitted, uploaded, preparedMarkers, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
+  return { setRecoveryHandler:fn=>{recoveryHandler=fn;}, state, sent, staged, submitted, uploaded, preparedMarkers, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
 }
 
 test('current Run keyboard labels prepare the chat marker before the first request',async()=>{
@@ -712,4 +713,53 @@ test('explicit capture reads only a complete selected write_file without replayi
  h.state.generating=true;assert.equal((await h.send({type:'studio.captureWrite',sessionId:'s1',tool})).ok,false);
  h.state.generating=false;h.state.latestModel={text:JSON.stringify({v:1,name:'exec_command',arguments:{}})};
  assert.equal((await h.send({type:'studio.captureWrite',sessionId:'s1',tool})).ok,false);
+});
+
+
+test('v2 malformed reply recovers exact source while transient editing stays silent and dispatches once',async()=>{
+  const h=harness(),marker='a'.repeat(32),element={};
+  await h.send({type:'studio.arm',sessionId:'s1',sessionMarker:marker,turnless:true});h.run();
+  h.state.latestUser={text:'request'};h.state.modelAfterUser=true;
+  const broken='```text\nHELPER_'+marker+' read_file\npath: W:/file.txt';
+  const exact=broken+'\nEND_'+marker+'\n```';
+  h.state.latestModel={element,sourceRevision:'r1',text:broken,sourceError:'Incomplete source'};
+  let release,recoveries=0;
+  h.setRecoveryHandler(()=>{recoveries++;h.state.supported=false;h.state.generating=true;return new Promise(resolve=>{release=()=>{h.state.supported=true;h.state.generating=false;h.state.latestModel={element,sourceRevision:'r1',text:exact,sourceText:exact};resolve(true);};});});
+  h.mutate();await h.flush();assert.equal(recoveries,1);
+  h.mutate();h.tick();await h.flush();assert.equal(h.sent.filter(message=>message.type==='studio.observerError').length,0);
+  release();await h.flush();h.mutate();await h.flush();
+  const calls=h.sent.filter(message=>message.type==='studio.call');assert.equal(calls.length,1);assert.equal(calls[0].text,exact);
+  await h.send({type:'studio.readReply',sessionId:'s1'});assert.equal(recoveries,1);
+});
+
+test('readReply attempts unavailable v2 source recovery only once and preserves source error',async()=>{
+  const h=harness(),marker='a'.repeat(32);
+  await h.send({type:'studio.arm',sessionId:'s1',sessionMarker:marker,turnless:true});
+  h.state.latestUser={text:'request'};h.state.modelAfterUser=true;h.state.latestModel={text:'incomplete',sourceError:'Exact source unavailable',sourceRevision:'r1'};
+  let recoveries=0;h.setRecoveryHandler(async()=>{recoveries++;return false;});
+  for(let i=0;i<2;i++){const reply=await h.send({type:'studio.readReply',sessionId:'s1'});assert.equal(reply.sourceError,'Exact source unavailable');}
+  assert.equal(recoveries,1);
+});
+
+
+test('local raw recovery preserves the rejected reply response key',async()=>{
+  const h=harness(),marker='a'.repeat(32);
+  await h.send({type:'studio.arm',sessionId:'s1',sessionMarker:marker,turnless:true});h.run();
+  h.state.latestUser={text:'same request'};h.state.modelAfterUser=true;
+  const broken='```helper-call\n{';h.state.latestModel={text:broken,sourceRevision:'same'};
+  const before=await h.send({type:'studio.readReply',sessionId:'s1'});
+  const raw='```text\nHELPER_'+marker+' read_file\npath: W:/file.txt\nEND_'+marker+'\n```';
+  h.state.latestModel={text:raw,sourceText:raw,sourceRevision:'same',responseIdentityText:broken};
+  const after=await h.send({type:'studio.readReply',sessionId:'s1'});
+  assert.equal(after.responseKey,before.responseKey);assert.equal(after.text,raw);
+});
+
+test('explicit capture recovers a malformed current v2 call locally',async()=>{
+  const h=harness(),marker='a'.repeat(32);
+  await h.send({type:'studio.arm',sessionId:'s1',sessionMarker:marker,turnless:true});
+  h.state.latestUser={text:'request'};h.state.modelAfterUser=true;h.state.latestModel={text:'broken',sourceError:'Incomplete source',sourceRevision:'r1'};
+  const raw='```text\nHELPER_'+marker+' read_file\npath: W:/file.txt\nEND_'+marker+'\n```';
+  h.setRecoveryHandler(async()=>{h.state.latestModel={text:raw,sourceRevision:'r1'};return true;});
+  const reply=await h.send({type:'studio.captureCall',sessionId:'s1',tools:[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false}}]});
+  assert.equal(reply.ok,true);assert.equal(reply.text,raw);assert.equal(h.sent.filter(message=>message.type==='studio.call').length,0);
 });

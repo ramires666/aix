@@ -6,7 +6,7 @@
   window.__webcodexBridgeDispose?.();
   window.__webcodexBridgeLoaded = true;
   const adapter=WebCodexStudio.createAdapter(document,location);
-  const contentVersion='0.4.0';
+  const contentVersion='0.4.1';
   const pageInstance=Date.now()+'-'+Math.random();
   let sessionMarker='';
   let sessionId='', baselineText='', conversationKey='', lastText='', lastDelivered='', inFlight='', observerTimer=0, stopping=false, newChatPending=false, newChatRequestInFlight=false, attempted=new Set(), recoverTurn='', recoverTools=[], turnless=false, turnlessRecovery=false, observedUserText='', observedResultId='', observedContext='';
@@ -16,7 +16,7 @@
   let checkInstructions=false, instructionCheckPending=false, systemStagePending=false;
   let historyCandidate='', historyObservations=0, navigationRevision=0;
   const replyQuietMs=1000, invalidReplyQuietMs=8000;
-  let pendingReply=null, replyTimer=0;
+  let pendingReply=null, replyTimer=0, sourceRecoveryPending=false, sourceRecoveryAttempt=null;
   const serviceNodes=new Set();
   const send=async(type,data={})=>{
     try{return await chrome.runtime.sendMessage({type,sessionId,contentVersion,...data});}
@@ -31,7 +31,7 @@
   }
   function visibleResultId(user){const parsed=parsedResult(user?.text)?.operation_id,id=typeof user?.operationId==='string'&&user.operationId?user.operationId:'';return id||parsed||'';}
   function snapshot(operationId,conversationReplaced=false,expectedResultText){const s=adapter.inspect(),resultId=visibleResultId(s.latestUser);const observerStatus=attachmentPending?'attaching_files':!s.supported?'unsupported':checkInstructions||systemStagePending?'checking':s.generating?'generating':!s.latestModel||s.modelAfterUser===false?'waiting_model':turnless&&!awaitingResponse?'waiting_request':pendingReply?'settling':'observing';return {observerStatus,supported:s.supported,generating:s.generating,editorEmpty:s.editorEmpty,conversationKey:s.conversationKey,chatMarkers:s.chatMarkers||[],chatAddress:s.chatAddress||'',error:s.error,...(conversationReplaced?{conversationReplaced:true}:{}),deliveredOperationId:resultId,delivered:operationId?resultId===operationId||adapter.hasDelivery(operationId,expectedResultText):undefined};}
-  function reportObserverError(error){if(!retired&&sessionId)send('studio.observerError',{observerStatus:'error',observerError:String(error.message||error)}).catch(()=>{});}
+  function reportObserverError(error){if(!retired&&!sourceRecoveryPending&&sessionId)send('studio.observerError',{observerStatus:'error',observerError:String(error.message||error)}).catch(()=>{});}
   async function attachmentFiles(message,isCurrent){
     const files=[];
     for(const meta of message.attachments){
@@ -67,6 +67,21 @@
     if(remaining<=0)return true;
     replyTimer=setTimeout(()=>{replyTimer=0;observe().catch(reportObserverError);},remaining);
     return false;
+  }
+  async function recoverReplySource(s){
+    const model=s.latestModel;
+    if(!turnless||!sessionMarker||!adapter.recoverReplySource||!model||!model.sourceError&&WebCodexProtocol.analyzeReply(model.text).kind!=='error')return s;
+    const identity=[sessionId,generationCounter,observedContext,navigationRevision,model.element,model.sourceRevision,model.sourceText??model.text];
+    if(sourceRecoveryAttempt?.every((value,index)=>value===identity[index]))return s;
+    if(sourceRecoveryPending)return null;
+    sourceRecoveryAttempt=identity;sourceRecoveryPending=true;
+    try{
+      let recovered=false;
+      try{recovered=await adapter.recoverReplySource(model);}catch{}
+      const current=adapter.inspect();
+      if(retired||sessionId!==identity[0]||generationCounter!==identity[1]||observedContext!==identity[2]||navigationRevision!==identity[3]||current.generating||current.latestModel?.element!==model.element||current.latestModel?.sourceRevision!==model.sourceRevision)return null;
+      return recovered?current:s;
+    }finally{sourceRecoveryPending=false;}
   }
   function rememberHistory(){historyObservations=0;historyCandidate='';checkInstructions=false;}
   function requestInstructionCheck(){
@@ -113,25 +128,26 @@
   }
   function trackGeneration(s){if(s.generating)resetReply();if(turnless&&s.generating&&!s.controlsPending){if(!awaitingResponse){awaitingResponse=true;generationCounter++;attempted.clear();lastText='';baselineText='';baselineModelText=s.latestModel?.text||'';}generationSeen=true;}}
   function expectResponse(){const s=adapter.inspect();recoverTurn='';turnlessRecovery=false;awaitingResponse=true;generationSeen=false;generationCounter++;attempted.clear();lastText='';baselineText='';baselineModelText=s.latestModel?.text||'';}
-  async function observe(){if(retired)return;const s=adapter.inspect();if(s.supported&&s.latestModel&&s.latestUser){hadConversation=true;emptyObservations=0;}const blank=s.supported&&(!s.generating||s.controlsPending)&&s.editorEmpty&&!s.latestModel&&!s.latestUser;if(!blank)emptyObservations=0;else if(hadConversation&&!newChatPending&&!awaitingResponse&&!deliveryPending&&!allowedFollowupId&&!inFlight&&!checkInstructions&&++emptyObservations>=2)newChatPending=true;const conversationReplaced=newChatPending&&blank;if(conversationReplaced){if(newChatRequestInFlight)return;newChatRequestInFlight=true;try{const transition={...snapshot(undefined,true),error:'Conversation was replaced'};if(sessionId)await send('studio.snapshot',transition);else await send('studio.hello',{pageInstance,...transition});}finally{newChatRequestInFlight=false;}return;}if(!sessionId||newChatPending)return;if(!s.supported){await send('studio.snapshot',snapshot());return;}
+  async function observe(){if(retired||sourceRecoveryPending)return;let s=adapter.inspect();if(s.supported&&s.latestModel&&s.latestUser){hadConversation=true;emptyObservations=0;}const blank=s.supported&&(!s.generating||s.controlsPending)&&s.editorEmpty&&!s.latestModel&&!s.latestUser;if(!blank)emptyObservations=0;else if(hadConversation&&!newChatPending&&!awaitingResponse&&!deliveryPending&&!allowedFollowupId&&!inFlight&&!checkInstructions&&++emptyObservations>=2)newChatPending=true;const conversationReplaced=newChatPending&&blank;if(conversationReplaced){if(newChatRequestInFlight)return;newChatRequestInFlight=true;try{const transition={...snapshot(undefined,true),error:'Conversation was replaced'};if(sessionId)await send('studio.snapshot',transition);else await send('studio.hello',{pageInstance,...transition});}finally{newChatRequestInFlight=false;}return;}if(!sessionId||newChatPending)return;if(!s.supported){await send('studio.snapshot',snapshot());return;}
     if(systemStagePending||await ensureSavedInstructions(s))return;
     if(turnless){const userText=s.latestUser?.text||'',resultId=visibleResultId(s.latestUser);if(resultId){observedResultId=resultId;adapter.releaseFiles?.(resultId);}observedUserText=userText;const context=JSON.stringify([observedResultId,observedUserText]);if(context!==observedContext){observedContext=context;attempted.clear();lastText='';baselineText='';}trackGeneration(s);if(resultId&&resultId===allowedFollowupId&&s.modelAfterUser===true&&!awaitingResponse){generationCounter++;awaitingResponse=true;generationSeen=true;baselineModelText='';}if(s.modelAfterUser===false)return;}
     if(s.generating){resetReply();return;}
     if(stopping){resetReply();stopping=false;lastText=s.latestModel?.text||'';if(turnless){awaitingResponse=false;allowedFollowupId='';}return;}
-    const model=s.latestModel;if(!model||model.text===baselineText||!model.text||model.text===lastText)return;
+    let model=s.latestModel;if(!model||model.text===baselineText||!model.text||model.text===lastText)return;
     if(s.modelError&&!s.generating){await send('studio.modelError',{error:s.modelError});lastText=model.text;return;}
     if(turnless&&(!awaitingResponse||!generationSeen&&model.text===baselineModelText))return;
     const recoveringTurn=!!recoverTurn;if(recoveringTurn){try{if(!WebCodexProtocol.parseCall(model.text,recoverTurn,recoverTools))return;}catch{return;}}
     if(!replySettled(s))return;
+    s=await recoverReplySource(s);if(!s)return;model=s.latestModel;
     const marker=sessionId+'\0'+(turnless?observedResultId+'\0'+observedUserText+'\0':'')+model.text;if(attempted.has(model.text)||inFlight===marker)return;const callSession=sessionId,callGeneration=generationCounter,callContext=observedContext;inFlight=marker;try{
-      const contextFields=turnless?{responseKey:await responseKeyFor(callGeneration,observedResultId,observedUserText,model.text),precedingResultId:observedResultId}:{};
+      const contextFields=turnless?{responseKey:await responseKeyFor(callGeneration,observedResultId,observedUserText,model.responseIdentityText??model.text),precedingResultId:observedResultId}:{};
       const current=adapter.inspect();
       if(sessionId!==callSession||current.generating||current.latestModel?.sourceRevision!==model.sourceRevision||current.latestModel?.text!==model.text||(current.latestModel?.sourceText??model.text)!==(model.sourceText??model.text)||turnless&&(callGeneration!==generationCounter||callContext!==observedContext||!awaitingResponse))return;
       const response=await send('studio.call',{text:model.text,sourceText:model.sourceText??model.text,sourceBlocks:model.sourceBlocks,sourceRemainder:model.sourceRemainder,recoveryRules:model.recoveryRules,sourceRevision:model.sourceRevision,...(model.sourceError?{sourceError:model.sourceError}:{}),conversationKey,generating:false,...contextFields});if(sessionId===callSession&&response?.accepted&&(!turnless||callGeneration===generationCounter&&callContext===observedContext)){lastText=model.text;if(turnless){awaitingResponse=false;if(observedResultId===allowedFollowupId)allowedFollowupId='';}if(recoveringTurn)recoverTurn='';attempted.add(model.text);if(/^```helper-call\s/.test(model.text)&&model.element)serviceNodes.add(model.element);}}finally{if(inFlight===marker)inFlight='';}
   }
-  const schedule=()=>{if(retired)return;try{if(turnless&&!checkInstructions)trackGeneration(adapter.inspect());clearTimeout(observerTimer);observerTimer=setTimeout(()=>observe().catch(reportObserverError),250);}catch(error){reportObserverError(error);}};
+  const schedule=()=>{if(retired||sourceRecoveryPending)return;try{if(turnless&&!checkInstructions)trackGeneration(adapter.inspect());clearTimeout(observerTimer);observerTimer=setTimeout(()=>observe().catch(reportObserverError),250);}catch(error){reportObserverError(error);}};
   document.addEventListener('click',event=>{
-    if(retired)return;
+    if(retired||sourceRecoveryPending)return;
     const button=event.target?.closest?.('button,a,[role="button"],[role="link"]');
     const copy=button?.cloneNode?.(true);
     if(copy)for(const icon of copy.querySelectorAll('[aria-hidden="true"], .material-symbols-outlined, .material-icons, mat-icon, svg'))icon.remove();
@@ -145,13 +161,13 @@
   },true);
   window.addEventListener?.('popstate',requestInstructionCheck);
   document.addEventListener('keydown',event=>{
-    if(retired)return;
+    if(retired||sourceRecoveryPending)return;
     if(event.key==='Escape'&&adapter.inspect().generating)stopping=true;
     const editor=event.target?.closest?.('textarea,[contenteditable="true"]');
     if(turnless&&event.key==='Enter'&&(event.ctrlKey||event.metaKey)&&!event.shiftKey&&!event.altKey&&editor&&editor.getAttribute?.('placeholder')!=='Optional tone and style instructions for the model'&&!editor.closest?.('ms-system-instructions,[role="dialog"]')){if(sessionId&&sessionMarker&&!checkInstructions&&!systemStagePending)adapter.prepareSessionMessage?.(sessionMarker);expectResponse();}
   },true);
   const observer=new MutationObserver(schedule);observer.observe(document.documentElement,{subtree:true,childList:true,characterData:true,attributes:true});
-  const tickTimer=setInterval(()=>{if(retired)return;try{if(newChatPending)observe().catch(reportObserverError);else if(sessionId){send('studio.tick',snapshot()).catch(reportObserverError);observe().catch(reportObserverError);}else{send('studio.hello',hello()).catch(()=>{});}}catch(error){reportObserverError(error);}},2000);
+  const tickTimer=setInterval(()=>{if(retired||sourceRecoveryPending)return;try{if(newChatPending)observe().catch(reportObserverError);else if(sessionId){send('studio.tick',snapshot()).catch(reportObserverError);observe().catch(reportObserverError);}else{send('studio.hello',hello()).catch(()=>{});}}catch(error){reportObserverError(error);}},2000);
   function retire(){if(retired)return;retired=true;resetReply();sessionId='';clearTimeout(observerTimer);clearInterval(tickTimer);observer.disconnect();window.removeEventListener?.('popstate',requestInstructionCheck);if(window.__webcodexBridgeDispose===retire){window.__webcodexBridgeLoaded=false;delete window.__webcodexBridgeDispose;}}
   window.__webcodexBridgeDispose=retire;
   chrome.runtime.onMessage.addListener((m,_sender,reply)=>{
@@ -168,26 +184,28 @@
     if(m.type==='studio.bindMarker'){sessionMarker=m.sessionMarker||'';reply({ok:true});return;}
     if(m.type==='studio.cancelDelivery'){deliveryRevision++;reply({ok:true});return;}
     if(m.type==='studio.readReply'){
-      const s=adapter.inspect(),model=s.latestModel,revision=navigationRevision;
+      let s=adapter.inspect(),model=s.latestModel;const revision=navigationRevision;
       if(checkInstructions||!s.supported||s.generating||!model||s.modelAfterUser===false){reply({ok:false,error:'Дождитесь полного ответа в текущем чате'});return;}
       (async()=>{
-        const responseKey=await responseKeyFor(generationCounter,observedResultId,observedUserText,model.text);
+        s=await recoverReplySource(s);if(!s)throw Error('Ответ изменился во время чтения');model=s.latestModel;
+        const responseKey=await responseKeyFor(generationCounter,observedResultId,observedUserText,model.responseIdentityText??model.text);
         const current=adapter.inspect();
         if(sessionId!==m.sessionId||navigationRevision!==revision||current.generating||current.latestModel?.sourceRevision!==model.sourceRevision||current.latestModel?.text!==model.text||(current.latestModel?.sourceText??current.latestModel?.text)!==(model.sourceText??model.text))throw Error('Ответ изменился во время чтения');
         reply({ok:true,text:model.text,sourceText:model.sourceText??model.text,sourceBlocks:model.sourceBlocks,sourceRemainder:model.sourceRemainder,recoveryRules:model.recoveryRules,sourceRevision:model.sourceRevision,sourceError:model.sourceError,responseKey,conversationKey:s.conversationKey});
       })().catch(error=>reply({ok:false,error:String(error.message||error)}));return true;
     }
     if(m.type==='studio.captureWrite'||m.type==='studio.captureCall'){
-      const s=adapter.inspect();
+      let s=adapter.inspect();
       if(checkInstructions||!s.supported||s.generating||!s.latestModel){reply({ok:false,error:'Дождитесь полного ответа модели и завершения перехода в чат'});return;}
-      try{
+      (async()=>{
+        s=await recoverReplySource(s);if(!s)throw Error('Ответ изменился во время чтения');
         const selected=m.type==='studio.captureWrite'?[m.tool]:m.tools||[];
         if(s.latestModel.sourceError)throw Error(s.latestModel.sourceError);
         const call=WebCodexProtocol.parseCall(s.latestModel.text,null,selected,{...s.latestModel,sessionMarker,allowUnmarked:true});
         if(!call||m.type==='studio.captureWrite'&&call.name!=='write_file')throw Error('В последнем ответе нет единственного корректного выбранного вызова');
         resetReply();baselineText=s.latestModel.text;lastText=baselineText;awaitingResponse=false;allowedFollowupId='';
         reply({ok:true,text:s.latestModel.text,sourceBlocks:s.latestModel.sourceBlocks,sourceRemainder:s.latestModel.sourceRemainder,pageInstance,conversationKey:s.conversationKey});
-      }catch(error){reply({ok:false,error:String(error.message||error)});}return;
+      })().catch(error=>reply({ok:false,error:String(error.message||error)}));return true;
     }
     if(m.type==='studio.cleanup'){if(m.final)adapter.annotateContext();if(!m.enabled)adapter.restoreCleanup();else if(m.final)adapter.cleanup({turns:[...serviceNodes],operationIds:m.operationIds||[]});reply({ok:true});return;}
     if(m.type==='studio.disarm'){resetReply();sessionId='';sessionMarker='';inFlight='';allowedFollowupId='';reply({ok:true});return;}

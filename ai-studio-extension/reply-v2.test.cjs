@@ -1,7 +1,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
-const {parseCall}=require('./protocol.js');
-const {Node,setup}=require('./test-fixtures/studio-dom.cjs');
+const {parseCall,buildSystemInstructions}=require('./protocol.js');
+const {Node,Textarea,setup}=require('./test-fixtures/studio-dom.cjs');
 const marker='0123456789abcdef0123456789abcdef';
 const tools=[
   {name:'write_file',inputSchema:{type:'object',properties:{path:{type:'string'},content:{type:'string'},if_absent:{type:'boolean',const:true}},required:['path','content','if_absent'],additionalProperties:false}},
@@ -67,4 +67,53 @@ test('extension-owned fields apply at the argument boundary while nested data ke
   const args={data:{delivery:'ordinary data',request_key:'nested value'}};
   assert.deepEqual(parseCall(frame('nested\narguments: '+JSON.stringify(args)),null,selected).arguments,args);
   assert.throws(()=>parseCall(frame('nested\narguments: '+JSON.stringify({...args,request_key:'injected'})),null,selected));
+});
+
+test('templates use a concrete tilde fence that preserves nested Markdown documents',()=>{
+  const system=buildSystemInstructions({tools,turnless:true,replyFormat:'v2'});
+  assert.equal((system.match(/^~~~~~~~~~~~~~~~~text$/gm)||[]).length,tools.length);
+  assert.doesNotMatch(system,/^```text$/m);
+  const body='# План\n```mermaid\nflowchart LR\n A --> B\n```\n~~~js\nconsole.log("😀");\n~~~\n';
+  const raw='Пишу документ.\n\n~~~~~~~~~~~~~~~~text\n'+frame('write_file\npath: W:/plan.md\nif_absent: true',body)+'\n~~~~~~~~~~~~~~~~';
+  assert.equal(parseCall(raw,null,tools).arguments.content,body);
+  assert.match(system,/returned next offsets/);
+  assert.match(system,/write it once with write_file/);
+});
+
+test('exact edit source recovers broken outer fences without changing raw bytes',()=>{
+  for(const newline of ['\n','\r\n']){
+    const body='$content = @\'\n# План 😀\n```mermaid\nflowchart LR\nA --> B\n```\n*literal* \\path\n\'@'.replaceAll('\n',newline);
+    const raw=('Пишу.\n\n```text\n'+frame('exec_command\ncwd: W:/project',body)+'\n```\nГотово.').replaceAll(/(?<!\r)\n/g,newline);
+    assert.throws(()=>parseCall(raw,null,tools),/missing end/);
+    const call=parseCall(raw,null,tools,{sourceBlocks:[{text:raw,kind:'reply'}]});
+    assert.equal(call.arguments.command,body);
+    assert.throws(()=>parseCall(raw.replace('\nEND_'+marker,''),null,tools,{sourceBlocks:[{text:raw.replace(/\r?\nEND_[a-f0-9]+/,''),kind:'reply'}]}),/missing end/);
+  }
+  const two='```text\n'+frame('list_allowed_roots')+'\n```\n```text\n'+frame('list_allowed_roots')+'\n```';
+  assert.throws(()=>parseCall(two,null,tools,{sourceBlocks:[{text:two,kind:'reply'}]}),/Ambiguous/);
+});
+
+test('local edit recovery reads the original reply once and invalidates it when the answer changes',async()=>{
+  const state=setup(),role=state.model.children[0];state.chunk.remove();
+  const body='# Документ\n```js\nconst x = "😀";\n```\n';
+  const raw='Пишу.\n\n```text\n'+frame('write_file\npath: W:/plan.md\nif_absent: true',body)+'\n```';
+  const source=role.add(new Node('pre',{},raw.slice(raw.indexOf('HELPER_'),raw.indexOf('```js'))));
+  const edit=state.model.add(new Node('button',{'aria-label':'Edit'}));
+  let opened=0,input;
+  edit.click=()=>{
+    opened++;edit.attrs['aria-label']='Stop editing';input=role.add(new Textarea(raw));
+    edit.click=()=>{input.remove();edit.attrs['aria-label']='Edit';};
+  };
+  const before=state.adapter.inspect().latestModel;
+  assert.throws(()=>parseCall(before.text,null,tools,before),/missing end/);
+  assert.equal(await state.adapter.recoverReplySource(before),true);
+  const recovered=state.adapter.inspect().latestModel;
+  assert.equal(recovered.sourceRevision,before.sourceRevision);
+  assert.equal(parseCall(recovered.text,null,tools,recovered).arguments.content,body);
+  assert.equal(input.value,raw);
+  assert.equal(state.adapter.inspect().supported,true);
+  assert.equal(await state.adapter.recoverReplySource(recovered),true);
+  assert.equal(opened,1);
+  source.textContent=frame('list_allowed_roots');
+  assert.equal(state.adapter.inspect().latestModel.sourceBlocks[0].kind,'code');
 });
