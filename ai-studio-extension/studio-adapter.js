@@ -139,6 +139,13 @@
     const bodies=allElements('.turn-content',el).filter(visible);
     return bodies.length===1?bodies[0]:el;
   };
+  const resultSources = (el) => {
+    const copy=answerCopy(userBody(el));
+    for(const chunk of allElements('ms-prompt-chunk',copy))if(!chunk.matches?.('.text-chunk'))chunk.remove();
+    for(const asset of allElements('ms-prompt-attachment, ms-file-preview, ms-attachment, .attachment, .file-preview, .file-chip, [data-file-name], [data-attachment-id]',copy))asset.remove();
+    const code=sourceBlocks(copy).blocks.map(block=>block.text);
+    return code.length?code:[modelText(copy).trim()];
+  };
   const parseResultOperationId = (raw) => {
     const candidate=stripUserHeader(raw).replace(/^(?:helper-result|webcodex-result|json|code)\s*(?=\{)/i,'');
     try{JSON.parse(candidate);}catch{return '';}
@@ -232,7 +239,8 @@
     const modelError=/^(?:An internal error has occurred\.?|Internal error\.?)$/i.test(modelSource.trim())?'AI Studio: An internal error has occurred. Generation failed; no new command was executed.':'';
     const user = recognized.filter((el) => role(el) === 'user').pop() || null;
     const latestUserText = user ? finalText(userBody(user)) : '';
-    const latestUserOperationId = user && parseResultOperationId(latestUserText) || '';
+    const userSources=user?resultSources(user):[];
+    const latestUserOperationId = userSources.length===1?parseResultOperationId(userSources[0]):'';
     return {
       conversationKey: conversationKey(), chatMarkers:chatMarkers(recognized), chatAddress:/^\/(?:app\/)?prompts\/(?!new_chat\b|new\b)[^/]+\/?$/.test(location.pathname||'')?location.pathname:'', generating, controlsPending,
       editorEmpty: candidateEditors.length === 1 && editorValue(candidateEditors[0]) === '',
@@ -285,8 +293,8 @@
         const button = submitButton();
         if (button && !button.disabled && attr(button, 'aria-disabled') !== 'true') {
           if (!isCurrent() || ownedDraft?.value !== draft) return false;
-          ownedDraft = null;
           button.click();
+          ownedDraft = null;
           return true;
         }
         if (attempt < 60) await new Promise(resolve => (document.defaultView?.setTimeout || setTimeout)(resolve, 50));
@@ -511,7 +519,9 @@
     const expected = expectedDeliveryText(marker, expectedText);
     return turns().filter((el) => {
       if (role(el) !== 'user') return false;
-      const raw=finalText(userBody(el));
+      const sources=resultSources(el);
+      if(sources.length!==1)return false;
+      const raw=sources[0];
       if (expected) return matchesExpectedDelivery(raw,expected);
       return raw.includes(`[WebCodex operation ${marker}]`) || parseResultOperationId(raw) === marker;
     });

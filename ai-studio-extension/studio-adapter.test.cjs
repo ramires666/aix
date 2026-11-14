@@ -371,6 +371,32 @@ test('preserves an existing user draft and rejects ambiguous editors or active g
   assert.equal(active.adapter.stage('later'), false);
 });
 
+test('the Run capture handler cannot prepend session context to the owned result',async()=>{
+  const state=setup({empty:true});
+  const draft='```helper-result\n{"type":"helper-result","operation_id":"owned"}\n```';
+  state.run.click=()=>{
+    assert.equal(state.adapter.prepareSessionMessage('a'.repeat(32)),true);
+    assert.equal(state.editor.value,draft);
+  };
+  assert.equal(await state.adapter.submit(draft),true);
+});
+
+test('delivery proof uses user text code and excludes file cards and attachment previews',()=>{
+  const state=setup(),payload=JSON.stringify({type:'helper-result',operation_id:'text-result',result:{ok:true}});
+  state.user.attrs['data-turn-role']='User';state.user.children=[];state.user.textContent='';
+  const file=state.user.add(new Node('ms-prompt-chunk',{class:'file-chunk'},'Generated File [November 14].plain'));
+  file.add(new Node('pre',{},JSON.stringify({type:'helper-result',operation_id:'file-result'})));
+  const message=state.user.add(new Node('ms-prompt-chunk',{class:'text-chunk'}));
+  message.add(new Node('span',{},'[Helper session '+ 'a'.repeat(32)+']\nSession marker\n[/Helper session]\n'));
+  const code=message.add(new Node('ms-code-block'));code.add(new Node('header',{},'Helper-result'));code.add(new Node('pre',{},payload));
+  assert.equal(state.adapter.inspect().latestUser.operationId,'text-result');
+  assert.equal(state.adapter.hasDelivery('text-result',payload),true);
+  assert.equal(state.adapter.hasDelivery('file-result'),false);
+  message.add(new Node('pre',{},payload));
+  assert.equal(state.adapter.inspect().latestUser.operationId,'');
+  assert.equal(state.adapter.hasDelivery('text-result',payload),false);
+});
+
 test('resumes the exact owned draft without rewriting it and preserves user edits', () => {
   const { adapter, editor } = setup();
   assert.equal(adapter.stage('saved result'), true);

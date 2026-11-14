@@ -141,6 +141,20 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   systemBody.append(systemHeading,systemEditor);systemDialog.append(closeSystem,systemBody);document.body.append(systemDialog);
   if(!await adapter.stageSystemInstructions('Helper test rules')||systemDialog.isConnected||!systemEditor.value.includes('Preserve my rules.')||!systemEditor.value.includes('Helper test rules'))throw Error('system instructions dialog stayed open or lost user rules');cases++;
   }
+  const restoredUser=document.createElement('ms-chat-turn');restoredUser.setAttribute('data-turn-role','User');
+  const fileCard=document.createElement('ms-prompt-chunk');fileCard.className='file-chunk';fileCard.textContent='Generated File [November 14].plain';
+  const filePreview=document.createElement('pre');filePreview.textContent=JSON.stringify({type:'helper-result',operation_id:'file-preview'});fileCard.append(filePreview);
+  const textChunk=document.createElement('ms-prompt-chunk');textChunk.className='text-chunk';textChunk.textContent='[Helper session '+liveMarker+']\\nSession marker\\n[/Helper session]\\n';
+  const resultCode=document.createElement('ms-code-block'),label=document.createElement('header'),resultSource=document.createElement('pre');
+  const expectedResult=JSON.stringify({type:'helper-result',operation_id:'restored-result',result:{ok:true}});
+  label.textContent='Helper-result';resultSource.textContent=expectedResult;resultCode.append(label,resultSource);textChunk.append(resultCode);restoredUser.append(fileCard,textChunk);document.body.append(restoredUser);
+  if(adapter.inspect().latestUser.operationId!=='restored-result'||!adapter.hasDelivery('restored-result',expectedResult)||adapter.hasDelivery('file-preview'))throw Error('file metadata or session context hid the delivered result');cases++;
+  textChunk.append(resultCode.cloneNode(true));
+  if(adapter.inspect().latestUser.operationId||adapter.hasDelivery('restored-result',expectedResult))throw Error('duplicate user control sources were accepted');cases++;
+  restoredUser.remove();
+  const ownDraft=document.querySelector('textarea').value;let preserved=false;
+  document.addEventListener('click',event=>{if(event.target===run){adapter.prepareSessionMessage(liveMarker);preserved=document.querySelector('textarea').value===ownDraft;}},true);
+  if(!await adapter.submit(ownDraft)||!preserved)throw Error('Run capture modified the owned result');cases++;
   document.getElementById('check').textContent='PASS:'+cases;
 } catch(error) {document.getElementById('check').textContent='FAIL:'+error.message;}
 })();
@@ -155,5 +169,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:88');t.diagnostic('88 scenarios passed in installed Chrome, including upload resumption, scoped acknowledgement, nested dialog close, full tool list and Run Ctrl');
+  assert.equal(result,'PASS:91');t.diagnostic('91 scenarios passed in installed Chrome, including exact delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });
