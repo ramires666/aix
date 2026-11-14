@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const net = require('node:net');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -11,7 +12,7 @@ const enabled = process.env.WEBCODEX_BRIDGE_REAL_TEST === '1';
 const gatePath = process.env.WEBCODEX_TEST_GATE_PATH || path.resolve(__dirname, '..', 'bin', 'ai-studio-bridge', 'webcodex-gate.exe');
 const agentPath = process.env.WEBCODEX_TEST_AGENT_PATH || path.resolve(__dirname, '..', 'bin', 'ai-studio-bridge', 'webcodex-agent.exe');
 
-test('compiled Gate and agent complete real bridge file operations and reconnect', { skip: !enabled || process.platform !== 'win32', timeout: 45_000 }, async t => {
+test('compiled Gate and agent complete real bridge file operations and reconnect', { skip: !enabled || process.platform !== 'win32', timeout: 75_000 }, async t => {
   assert.ok(fs.existsSync(gatePath), 'compiled Gate binary is missing');
   assert.ok(fs.existsSync(agentPath), 'compiled agent binary is missing');
   const tempParent = path.resolve(__dirname, '..', 'tmp');
@@ -20,7 +21,33 @@ test('compiled Gate and agent complete real bridge file operations and reconnect
   const root = path.join(temp, 'files');
   fs.mkdirSync(root);
   const port = await freePort();
+  const proxyPort = await freePort();
   const baseUrl = `http://127.0.0.1:${port}`;
+  const proxyUrl = `http://127.0.0.1:${proxyPort}`;
+  let holdAgentResults = false, heldResults = [], holdDispatchKey = '', interceptedDispatch = false;
+  const proxy = http.createServer((request, response) => {
+    if (holdAgentResults && request.url === '/agent/result') { request.resume(); heldResults.push(response); return; }
+    const upstream = http.request(baseUrl + request.url, { method: request.method, headers: request.headers }, gateResponse => {
+      response.writeHead(gateResponse.statusCode, gateResponse.headers);
+      if (!request.url.startsWith('/agent/stream')) { gateResponse.pipe(response); return; }
+      let pending = Buffer.alloc(0);
+      gateResponse.on('data', bytes => {
+        pending = Buffer.concat([pending, bytes]);
+        let boundary;
+        while ((boundary = pending.indexOf(10)) !== -1) {
+          const line = pending.slice(0, boundary + 1); pending = pending.slice(boundary + 1);
+          if (holdDispatchKey && line.includes(holdDispatchKey) && line.includes('bridge/operations/create')) {
+            interceptedDispatch = true; holdDispatchKey = ''; continue;
+          }
+          response.write(line);
+        }
+      });
+      gateResponse.on('end', () => { if (pending.length) response.write(pending); response.end(); });
+    });
+    request.pipe(upstream);
+    upstream.on('error', () => response.destroy());
+  });
+  await new Promise((resolve, reject) => proxy.once('error', reject).listen(proxyPort, '127.0.0.1', resolve));
   const password = `test-${require('node:crypto').randomBytes(24).toString('hex')}`;
   const auth = 'Basic ' + Buffer.from(`admin:${password}`).toString('base64');
   const fixture = path.join(root, 'fixture.txt');
@@ -41,17 +68,22 @@ test('compiled Gate and agent complete real bridge file operations and reconnect
     gate = start(gatePath, {
       WEBCODEX_ADDR: `127.0.0.1:${port}`, WEBCODEX_PUBLIC_URL: baseUrl,
       WEBCODEX_DB_PATH: path.join(temp, 'gate.db'), WEBCODEX_ADMIN_USER: 'admin', WEBCODEX_ADMIN_PASSWORD: password,
+      APPDATA: path.join(temp, 'gate-appdata'),
     });
   }
   function startAgent(token) {
     agent = start(agentPath, {
-      WEBCODEX_GATE_URL: baseUrl, WEBCODEX_AGENT_TOKEN: token, WEBCODEX_ALLOWED_ROOTS: root,
+      WEBCODEX_GATE_URL: proxyUrl, WEBCODEX_AGENT_TOKEN: token, WEBCODEX_ALLOWED_ROOTS: root,
       WEBCODEX_BROWSER_ENABLED: '0', WEBCODEX_BROWSER_BACKEND: 'disabled', WEBCODEX_LOG_DIR: path.join(temp, 'agent-logs'),
+      APPDATA: path.join(temp, 'agent-appdata'),
     });
   }
 
   t.after(async () => {
     for (const child of children) if (child.exitCode === null) child.kill();
+    for (const response of heldResults) response.destroy();
+    proxy.closeAllConnections?.();
+    await new Promise(resolve => proxy.close(resolve));
     await Promise.all(children.map(child => child.exitCode !== null ? Promise.resolve() : new Promise(resolve => {
       const timer = setTimeout(resolve, 1500);
       child.once('exit', () => { clearTimeout(timer); resolve(); });
@@ -131,6 +163,49 @@ test('compiled Gate and agent complete real bridge file operations and reconnect
     assert.equal(largeWrite.status,'completed');assert.ok(fs.readFileSync(largePath,'utf8')===content,'Gate write must preserve exact contents');
     const largeRead=await completeOperation(client,operationKey(),'read_file',{path:largePath});
     assert.ok(largeRead.result.structuredContent.content===content,'Gate must return the full large result');
+
+    phase = 'lose completed agent reply and restart Gate';
+    const lostPath = path.join(root, 'lost-reply.txt'), lostKey = operationKey();
+    const lostArgs = { path: lostPath, content: 'written exactly once\n', if_absent: true };
+    holdAgentResults = true;
+    const lost = await client.createOperation({ key: lostKey, name: 'write_file', arguments: lostArgs, agentId: 'real-agent' });
+    await waitFor(() => heldResults.length > 0);
+    assert.equal(fs.readFileSync(lostPath, 'utf8'), lostArgs.content);
+    const lostModified = fs.statSync(lostPath).mtimeMs;
+    gate.kill(); await exited(gate);
+    holdAgentResults = false;
+    for (const response of heldResults.splice(0)) response.destroy();
+    startGate();
+    await waitFor(async () => (await request('/healthz')).ok);
+    await waitFor(async () => (await admin('/admin')).includes('Online'));
+    const recovered = await waitFor(async () => { const current = await client.getOperation(lost.id); return current.status === 'completed' ? current : false; });
+    assert.equal(recovered.id, lost.id);
+    assert.equal(recovered.result.structuredContent.bytes_written, Buffer.byteLength(lostArgs.content));
+    assert.equal((await client.getOperationByKey(lostKey)).id, lost.id);
+    assert.equal(fs.statSync(lostPath).mtimeMs, lostModified, 'recovery repeated the file write');
+
+    phase = 'read-only missing journal lookup and explicit same-key retry';
+    const unsentPath = path.join(root, 'not-dispatched.txt'), unsentKey = operationKey();
+    const unsentArgs = { path: unsentPath, content: 'dispatched after explicit retry\n', if_absent: true };
+    holdDispatchKey = unsentKey; interceptedDispatch = false;
+    const unsent = await client.createOperation({ key: unsentKey, name: 'write_file', arguments: unsentArgs, agentId: 'real-agent' });
+    await waitFor(() => interceptedDispatch);
+    assert.equal(fs.existsSync(unsentPath), false);
+    gate.kill(); await exited(gate);
+    startGate();
+    await waitFor(async () => (await request('/healthz')).ok);
+    await waitFor(async () => (await admin('/admin')).includes('Online'));
+    const missing = await client.getOperationByKey(unsentKey);
+    assert.equal(missing.id, unsent.id);
+    assert.equal(missing.status, 'not_found');
+    assert.equal((await client.getOperation(unsent.id)).status, 'not_found');
+    assert.equal(fs.existsSync(unsentPath), false, 'GET unexpectedly executed the operation');
+    const retried = await client.createOperation({ key: unsentKey, name: 'write_file', arguments: unsentArgs, agentId: 'real-agent' });
+    assert.equal(retried.id, unsent.id);
+    const explicitResult = await waitFor(async () => { const current = await client.getOperation(unsent.id); return current.status === 'completed' ? current : false; });
+    assert.equal(explicitResult.result.structuredContent.bytes_written, Buffer.byteLength(unsentArgs.content));
+    assert.equal(fs.readFileSync(unsentPath, 'utf8'), unsentArgs.content);
+
     const previousGate = gate;
     phase = 'restart Gate';
     previousGate.kill();

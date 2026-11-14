@@ -12,7 +12,8 @@ import (
 )
 
 type activeAgentStream struct {
-	cancel context.CancelFunc
+	cancel     context.CancelFunc
+	operations bool
 }
 
 // agentRuntime manages the in-memory communication state (stream, queue, pending requests) for a single agent.
@@ -38,9 +39,14 @@ func newAgentRuntime(id string) *agentRuntime {
 // activateAgentStream registers an incoming agent stream connection.
 // If an active stream already exists for this agent, it is cancelled and replaced.
 func (rt *agentRuntime) activateAgentStream(parent context.Context) (context.Context, *activeAgentStream, bool) {
+	return rt.activateAgentStreamWithOperations(parent, false)
+}
+
+func (rt *agentRuntime) activateAgentStreamWithOperations(parent context.Context, operations bool) (context.Context, *activeAgentStream, bool) {
 	streamCtx, cancel := context.WithCancel(parent)
 	stream := &activeAgentStream{
-		cancel: cancel,
+		cancel:     cancel,
+		operations: operations,
 	}
 
 	rt.mu.Lock()
@@ -84,6 +90,12 @@ func (rt *agentRuntime) isOnline() bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.stream != nil
+}
+
+func (rt *agentRuntime) durableOperations() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.stream != nil && rt.stream.operations
 }
 
 // status returns the online status and the timestamp of last activity.

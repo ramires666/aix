@@ -118,6 +118,10 @@ func TestBridgeOperationAcceptanceIsIdempotentAndConflictsOnChangedArgs(t *testi
 	if first.ID != second.ID || first.Status != "accepted" || second.Status != "accepted" {
 		t.Fatalf("not idempotent: first=%+v second=%+v", first, second)
 	}
+	var legacyArgs []byte
+	if err := srv.store.db.QueryRowContext(ctx, `SELECT args_json FROM bridge_operations WHERE id=?`, first.ID).Scan(&legacyArgs); err != nil || legacyArgs != nil {
+		t.Fatalf("legacy operation unexpectedly persisted arguments: bytes=%d error=%v", len(legacyArgs), err)
+	}
 	if _, err = srv.store.acceptBridgeOperation(ctx, "op-client", req, "different", time.Now()); !errors.Is(err, errBridgeOperationConflict) {
 		t.Fatalf("changed arguments error = %v", err)
 	}
@@ -149,6 +153,362 @@ func TestBridgeOperationRestartMarksInFlightUnknown(t *testing.T) {
 	}
 	if status != "outcome_unknown" {
 		t.Fatalf("status=%q", status)
+	}
+}
+
+func TestBridgeOperationDurableIntentSurvivesRestart(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := srv.store.initBridgeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := createTestAgent(srv.store, ctx, Agent{ID: "durable-agent", Name: "Agent", Enabled: true, AgentTokenHash: hashSecret("agent")}, "durable-agent", ""); err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("%d-550e8400-e29b-41d4-a716-446655440000", time.Now().UnixMilli())
+	op, err := srv.store.acceptBridgeOperation(ctx, "durable-agent", bridgeOperationRequest{Key: key, Name: "write_file", AgentID: "durable-agent", Arguments: map[string]any{"path": "fixture", "content": "exact"}}, "hash", time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = srv.store.db.ExecContext(ctx, `UPDATE bridge_operations SET status='dispatching' WHERE id=?`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = srv.store.initBridgeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var args []byte
+	var durable bool
+	if err = srv.store.db.QueryRowContext(ctx, `SELECT status,args_json,durable FROM bridge_operations WHERE id=?`, op.ID).Scan(&status, &args, &durable); err != nil {
+		t.Fatal(err)
+	}
+	if status != "dispatching" || !durable || !bytes.Contains(args, []byte(`"content":"exact"`)) {
+		t.Fatalf("intent lost: status=%s durable=%t args=%s", status, durable, args)
+	}
+}
+
+func TestBridgeOperationDurableRecoveryUsesAgentLookup(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := srv.store.initBridgeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := createTestAgent(srv.store, ctx, Agent{ID: "durable-agent", Name: "Agent", Enabled: true, AgentTokenHash: hashSecret("agent"), AllowedTools: "write_file"}, "durable-agent", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.CreateAccessToken(ctx, AccessToken{TokenHash: hashSecret("durable-token"), ClientID: "durable-agent", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("%d-550e8400-e29b-41d4-a716-446655440000", time.Now().UnixMilli())
+	op, err := srv.store.acceptBridgeOperation(ctx, "durable-agent", bridgeOperationRequest{Key: key, Name: "write_file", AgentID: "durable-agent", Arguments: map[string]any{"path": "fixture", "content": "exact"}}, "hash", time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = srv.store.db.ExecContext(ctx, `UPDATE bridge_operations SET status='dispatching' WHERE id=?`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = srv.store.initBridgeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rt := srv.runtimeFor("durable-agent")
+	_, stream, _ := rt.activateAgentStreamWithOperations(ctx, true)
+	defer rt.deactivateAgentStream(stream)
+	completed := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRequest(http.MethodGet, "/bridge/v1/operations/"+op.ID, nil)
+		r.Header.Set("Authorization", "Bearer durable-token")
+		w := httptest.NewRecorder()
+		srv.handleBridgeGetOperation(w, r)
+		completed <- w
+	}()
+	call := <-rt.queue
+	var message struct {
+		Method string         `json:"method"`
+		Params map[string]any `json:"params"`
+	}
+	if err := json.Unmarshal(call.Request, &message); err != nil {
+		t.Fatal(err)
+	}
+	if message.Method != "bridge/operations/lookup" || message.Params["key"] != key || message.Params["client_id"] != "durable-agent" || message.Params["agent_id"] != "durable-agent" {
+		t.Fatalf("unsafe recovery call: %s", call.Request)
+	}
+	identity := sha256.Sum256([]byte(key))
+	response, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": op.ID, "result": map[string]any{"status": "completed", "operation_id": "op_" + hex.EncodeToString(identity[:]), "result": map[string]any{"isError": false, "structuredContent": map[string]any{"path": "fixture"}}}})
+	rt.mu.Lock()
+	pending := rt.pending[call.ID]
+	rt.mu.Unlock()
+	pending <- protocol.AgentResponse{ID: call.ID, Response: response}
+	w := <-completed
+	if w.Code != 200 {
+		t.Fatalf("get status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got bridgeOperation
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != op.ID || got.Status != "completed" || !bytes.Contains(got.Result, []byte(`"path":"fixture"`)) || len(rt.queue) != 0 {
+		t.Fatalf("recovery mismatch: %+v queue=%d", got, len(rt.queue))
+	}
+}
+
+func TestBridgeOperationDurableNotFoundRecreatesOnlySavedIntent(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := srv.store.initBridgeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := createTestAgent(srv.store, ctx, Agent{ID: "retry-agent", Name: "Agent", Enabled: true, AgentTokenHash: hashSecret("agent"), AllowedTools: "write_file"}, "retry-agent", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.CreateAccessToken(ctx, AccessToken{TokenHash: hashSecret("retry-token"), ClientID: "retry-agent", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("%d-550e8400-e29b-41d4-a716-446655440000", time.Now().UnixMilli())
+	arguments := map[string]any{"path": "fixture", "content": "saved", "if_absent": true}
+	canonical, _ := json.Marshal(map[string]any{"name": "write_file", "agent_id": "retry-agent", "arguments": arguments})
+	digest := sha256.Sum256(canonical)
+	op, err := srv.store.acceptBridgeOperation(ctx, "retry-agent", bridgeOperationRequest{Key: key, Name: "write_file", AgentID: "retry-agent", Arguments: arguments}, hex.EncodeToString(digest[:]), time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = srv.store.db.ExecContext(ctx, `UPDATE bridge_operations SET status='dispatching' WHERE id=?`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	rt := srv.runtimeFor("retry-agent")
+	_, stream, _ := rt.activateAgentStreamWithOperations(ctx, true)
+	defer rt.deactivateAgentStream(stream)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRequest(http.MethodGet, "/bridge/v1/operations/"+op.ID, nil)
+		r.Header.Set("Authorization", "Bearer retry-token")
+		w := httptest.NewRecorder()
+		srv.handleBridgeGetOperation(w, r)
+		done <- w
+	}()
+	respond := func(call protocol.AgentRequest, status string) {
+		t.Helper()
+		identity := sha256.Sum256([]byte(key))
+		response, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": op.ID, "result": map[string]any{"status": status, "operation_id": "op_" + hex.EncodeToString(identity[:]), "result": map[string]any{"isError": false, "structuredContent": map[string]any{"bytes_written": 5}}}})
+		rt.mu.Lock()
+		pending := rt.pending[call.ID]
+		rt.mu.Unlock()
+		if pending == nil {
+			t.Fatal("missing pending agent request")
+		}
+		pending <- protocol.AgentResponse{ID: call.ID, Response: response}
+	}
+	first := <-rt.queue
+	var firstCall struct {
+		Method string `json:"method"`
+	}
+	_ = json.Unmarshal(first.Request, &firstCall)
+	if firstCall.Method != "bridge/operations/lookup" {
+		t.Fatalf("first method %s", firstCall.Method)
+	}
+	respond(first, "not_found")
+	w := <-done
+	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"status":"not_found"`)) || !bytes.Contains(w.Body.Bytes(), []byte(op.ID)) || len(rt.queue) != 0 {
+		t.Fatalf("GET dispatched mutation: status=%d body=%s queue=%d", w.Code, w.Body.String(), len(rt.queue))
+	}
+	requestBody, _ := json.Marshal(bridgeOperationRequest{Key: key, Name: "write_file", AgentID: "retry-agent", Arguments: arguments})
+	post := httptest.NewRequest(http.MethodPost, "/bridge/v1/operations", bytes.NewReader(requestBody))
+	post.Header.Set("Authorization", "Bearer retry-token")
+	posted := httptest.NewRecorder()
+	srv.handleBridgeCreateOperation(posted, post)
+	if posted.Code != http.StatusAccepted {
+		t.Fatalf("retry POST %d %s", posted.Code, posted.Body.String())
+	}
+	recheck := <-rt.queue
+	var recheckCall struct {
+		Method string `json:"method"`
+	}
+	_ = json.Unmarshal(recheck.Request, &recheckCall)
+	if recheckCall.Method != "bridge/operations/lookup" {
+		t.Fatalf("POST did not check journal: %s", recheck.Request)
+	}
+	respond(recheck, "not_found")
+	second := <-rt.queue
+	var create struct {
+		Method string `json:"method"`
+		Params struct {
+			Key       string         `json:"key"`
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(second.Request, &create); err != nil {
+		t.Fatal(err)
+	}
+	if create.Method != "bridge/operations/create" || create.Params.Key != key || create.Params.Name != "write_file" || create.Params.Arguments["content"] != "saved" || create.Params.Arguments["path"] != "fixture" || create.Params.Arguments["if_absent"] != true {
+		t.Fatalf("changed intent: %s", second.Request)
+	}
+	respond(second, "completed")
+	deadline := time.Now().Add(time.Second)
+	var status string
+	for time.Now().Before(deadline) {
+		_ = srv.store.db.QueryRowContext(ctx, `SELECT status FROM bridge_operations WHERE id=?`, op.ID).Scan(&status)
+		if status == "completed" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if status != "completed" {
+		t.Fatalf("POST recovery status=%s", status)
+	}
+}
+
+func TestBridgeOperationOldAgentNeverGetsJournalMethod(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := srv.store.initBridgeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := createTestAgent(srv.store, ctx, Agent{ID: "old-agent", Name: "Agent", Enabled: true, AgentTokenHash: hashSecret("agent"), AllowedTools: "write_file"}, "old-agent", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.CreateAccessToken(ctx, AccessToken{TokenHash: hashSecret("old-token"), ClientID: "old-agent", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("%d-550e8400-e29b-41d4-a716-446655440000", time.Now().UnixMilli())
+	op, err := srv.store.acceptBridgeOperation(ctx, "old-agent", bridgeOperationRequest{Key: key, Name: "write_file", AgentID: "old-agent", Arguments: map[string]any{"path": "fixture", "content": "saved"}}, "hash", time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = srv.store.db.ExecContext(ctx, `UPDATE bridge_operations SET status='dispatching' WHERE id=?`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	rt := srv.runtimeFor("old-agent")
+	_, stream, _ := rt.activateAgentStream(ctx)
+	defer rt.deactivateAgentStream(stream)
+	r := httptest.NewRequest(http.MethodGet, "/bridge/v1/operations/"+op.ID, nil)
+	r.Header.Set("Authorization", "Bearer old-token")
+	w := httptest.NewRecorder()
+	srv.handleBridgeGetOperation(w, r)
+	if w.Code != 200 || len(rt.queue) != 0 {
+		t.Fatalf("old agent received journal request: status=%d queued=%d", w.Code, len(rt.queue))
+	}
+}
+
+func TestBridgeOperationChangedStoredArgumentsBlockReplay(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := srv.store.initBridgeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := createTestAgent(srv.store, ctx, Agent{ID: "hash-agent", Name: "Agent", Enabled: true, AgentTokenHash: hashSecret("agent"), AllowedTools: "write_file"}, "hash-agent", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.CreateAccessToken(ctx, AccessToken{TokenHash: hashSecret("hash-token"), ClientID: "hash-agent", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	key := fmt.Sprintf("%d-550e8400-e29b-41d4-a716-446655440000", time.Now().UnixMilli())
+	op, err := srv.store.acceptBridgeOperation(ctx, "hash-agent", bridgeOperationRequest{Key: key, Name: "write_file", AgentID: "hash-agent", Arguments: map[string]any{"path": "fixture", "content": "safe"}}, "unmatching-hash", time.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = srv.store.db.ExecContext(ctx, `UPDATE bridge_operations SET status='dispatching' WHERE id=?`, op.ID); err != nil {
+		t.Fatal(err)
+	}
+	rt := srv.runtimeFor("hash-agent")
+	_, stream, _ := rt.activateAgentStreamWithOperations(ctx, true)
+	defer rt.deactivateAgentStream(stream)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRequest(http.MethodGet, "/bridge/v1/operations/"+op.ID, nil)
+		r.Header.Set("Authorization", "Bearer hash-token")
+		w := httptest.NewRecorder()
+		srv.handleBridgeGetOperation(w, r)
+		done <- w
+	}()
+	call := <-rt.queue
+	var message struct {
+		Method string `json:"method"`
+	}
+	_ = json.Unmarshal(call.Request, &message)
+	if message.Method != "bridge/operations/lookup" {
+		t.Fatalf("unexpected call %s", call.Request)
+	}
+	response, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": op.ID, "result": map[string]any{"status": "not_found"}})
+	rt.mu.Lock()
+	pending := rt.pending[call.ID]
+	rt.mu.Unlock()
+	pending <- protocol.AgentResponse{ID: call.ID, Response: response}
+	w := <-done
+	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"status":"not_found"`)) || len(rt.queue) != 0 {
+		t.Fatalf("GET dispatched corrupt intent: status=%d body=%s queue=%d", w.Code, w.Body.String(), len(rt.queue))
+	}
+	requestBody, _ := json.Marshal(bridgeOperationRequest{Key: key, Name: "write_file", AgentID: "hash-agent", Arguments: map[string]any{"path": "fixture", "content": "safe"}})
+	post := httptest.NewRequest(http.MethodPost, "/bridge/v1/operations", bytes.NewReader(requestBody))
+	post.Header.Set("Authorization", "Bearer hash-token")
+	posted := httptest.NewRecorder()
+	srv.handleBridgeCreateOperation(posted, post)
+	if posted.Code != http.StatusConflict || len(rt.queue) != 0 {
+		t.Fatalf("corrupt intent replayed: status=%d queue=%d", posted.Code, len(rt.queue))
+	}
+}
+
+func TestBridgeOperationRejectsMismatchedJournalIdentityAndMissingResult(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		wrongID, missingResult bool
+	}{{"wrong-id", true, false}, {"null-result", false, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, cleanup := setupTestServer(t)
+			defer cleanup()
+			ctx := context.Background()
+			if err := srv.store.initBridgeOperations(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := createTestAgent(srv.store, ctx, Agent{ID: "identity-agent", Name: "Agent", Enabled: true, AgentTokenHash: hashSecret("agent"), AllowedTools: "read_file"}, "identity-agent", ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := srv.store.CreateAccessToken(ctx, AccessToken{TokenHash: hashSecret("identity-token"), ClientID: "identity-agent", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+				t.Fatal(err)
+			}
+			key := fmt.Sprintf("%d-550e8400-e29b-41d4-a716-446655440000", time.Now().UnixMilli())
+			op, err := srv.store.acceptBridgeOperation(ctx, "identity-agent", bridgeOperationRequest{Key: key, Name: "read_file", AgentID: "identity-agent", Arguments: map[string]any{"path": "fixture"}}, "hash", time.Now(), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = srv.store.db.ExecContext(ctx, `UPDATE bridge_operations SET status='dispatching' WHERE id=?`, op.ID); err != nil {
+				t.Fatal(err)
+			}
+			rt := srv.runtimeFor("identity-agent")
+			_, stream, _ := rt.activateAgentStreamWithOperations(ctx, true)
+			defer rt.deactivateAgentStream(stream)
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				r := httptest.NewRequest(http.MethodGet, "/bridge/v1/operations/"+op.ID, nil)
+				r.Header.Set("Authorization", "Bearer identity-token")
+				w := httptest.NewRecorder()
+				srv.handleBridgeGetOperation(w, r)
+				done <- w
+			}()
+			call := <-rt.queue
+			identity := sha256.Sum256([]byte(key))
+			agentID := "op_" + hex.EncodeToString(identity[:])
+			if tc.wrongID {
+				agentID = "op_other"
+			}
+			var result any = map[string]any{"isError": false, "structuredContent": map[string]any{"content": "safe"}}
+			if tc.missingResult {
+				result = nil
+			}
+			response, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": op.ID, "result": map[string]any{"status": "completed", "operation_id": agentID, "result": result}})
+			rt.mu.Lock()
+			pending := rt.pending[call.ID]
+			rt.mu.Unlock()
+			pending <- protocol.AgentResponse{ID: call.ID, Response: response}
+			w := <-done
+			if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"status":"outcome_unknown"`)) || bytes.Contains(w.Body.Bytes(), []byte(`"content":"safe"`)) {
+				t.Fatalf("invalid agent result was delivered: %d %s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 
@@ -207,7 +567,7 @@ func TestBridgeOperationConcurrentCreateIsIdempotent(t *testing.T) {
 	}
 	body := []byte(fmt.Sprintf(`{"key":"%d-550e8400-e29b-41d4-a716-446655440000","name":"list_agents","agent_id":"http-op-agent","arguments":{}}`, time.Now().UnixMilli()))
 	const callers = 12
-	ids := make(chan string, callers)
+	ops := make(chan bridgeOperation, callers)
 	var wg sync.WaitGroup
 	for i := 0; i < callers; i++ {
 		wg.Add(1)
@@ -226,18 +586,22 @@ func TestBridgeOperationConcurrentCreateIsIdempotent(t *testing.T) {
 				t.Errorf("decode: %v", err)
 				return
 			}
-			ids <- op.ID
+			ops <- op
 		}()
 	}
 	wg.Wait()
-	close(ids)
+	close(ops)
 	var first string
-	for id := range ids {
+	for op := range ops {
+		id := op.ID
 		if first == "" {
 			first = id
 		}
 		if id != first {
 			t.Fatalf("duplicate request returned IDs %q and %q", first, id)
+		}
+		if op.Status == "completed" && len(op.Result) == 0 {
+			t.Fatalf("terminal concurrent POST omitted result for %s", id)
 		}
 	}
 	var count int

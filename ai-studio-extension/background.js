@@ -567,10 +567,15 @@ async function recover(){if(restoreError)return;const revision=authorizationRevi
       if(s.transport==='local'||s.transport==='gate') {
         if(!pinned.getOperationByKey){const error=Error('Обновите '+(s.transport==='gate'?'Gate':'агент')+' для восстановления операции по ключу');error.code='LOOKUP_UNSUPPORTED';throw error;}
         result=await pinned.getOperationByKey(s.operationKey);
-        if(!result||!['not_found','expired','accepted','dispatching','running','completed','failed','outcome_unknown'].includes(result.status)||!['not_found','expired'].includes(result.status)&&!(result.operation_id||result.id))throw Error('Invalid operation lookup response');
       }
-      if(!result||result.status==='not_found') {
+    }
+    if(s.transport==='local'||s.transport==='gate'){
+      if(!result||!['not_found','expired','accepted','dispatching','running','completed','failed','outcome_unknown'].includes(result.status)||!['not_found','expired'].includes(result.status)&&!(result.operation_id||result.id))throw Error('Invalid operation lookup response');
+      if(s.operationId&&(result.operation_id||result.id)&&(result.operation_id||result.id)!==s.operationId)throw Error('Operation identity changed during recovery');
+    }
+    if(!result||result.status==='not_found') {
         if(s.paused)return;
+        if(!s.operationKey||!s.dispatchArgs||typeof s.dispatchArgs!=='object'||Array.isArray(s.dispatchArgs))throw Error('Saved operation intent is unavailable');
         const requiresAutoApproval=s.effect?.requiresAutoApproval??!SAFE.has(s.pendingCall.name);
         if(requiresAutoApproval&&(!s.autoApprove||approval!==approvalRevision)){
           s.phase='waiting_approval';s.executionStatus='not_sent';s.reasonCode='approval_revoked';await save();return;
@@ -580,7 +585,6 @@ async function recover(){if(restoreError)return;const revision=authorizationRevi
         await save();ensureActionCurrent(s,revision);
         if(requiresAutoApproval&&approval!==approvalRevision){s.phase='waiting_approval';s.executionStatus='not_sent';s.reasonCode='approval_revoked';await save();return;}
         result=await pinned.createOperation({key:s.operationKey,name:s.pendingCall.name,arguments:s.dispatchArgs,agentId:s.agentId});
-      }
     }
   }
     await finishResult(result,revision,deliveryPermission);

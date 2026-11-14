@@ -49,7 +49,7 @@ func (s *server) handleAgentStream(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
-	streamCtx, stream, replaced := rt.activateAgentStream(r.Context())
+	streamCtx, stream, replaced := rt.activateAgentStreamWithOperations(r.Context(), r.URL.Query().Get("operations") == "1")
 	log.Printf("agent stream connected agent=%s replaced=%t agent_version=%s gate_version=%s", agent.ID, replaced, buildinfo.DisplayPeer(r.URL.Query().Get("version")), buildinfo.Version)
 	go func(id string) {
 		_ = s.store.UpdateLastSeen(context.Background(), id, time.Now().UTC())

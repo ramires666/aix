@@ -31,6 +31,10 @@ func TestRealGateAndLocalExecutorEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	logs := filepath.Join(root, "logs")
+	agentConfig := filepath.Join(root, "agent-config")
+	if err := os.MkdirAll(agentConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	agentToken := "wc_agent_real_e2e"
 	mcpToken := "wc_mcp_real_e2e"
 	if err := createTestAgent(srv.store, context.Background(), Agent{
@@ -74,6 +78,7 @@ func TestRealGateAndLocalExecutorEndToEnd(t *testing.T) {
 		command := exec.CommandContext(ctx, agentBinary)
 		command.Dir = packageDir
 		command.Env = append(os.Environ(),
+			"APPDATA="+agentConfig, "XDG_CONFIG_HOME="+agentConfig,
 			"WEBCODEX_GATE_URL="+httpServer.URL,
 			"WEBCODEX_AGENT_TOKEN="+agentToken,
 			"WEBCODEX_ALLOWED_ROOTS="+root,

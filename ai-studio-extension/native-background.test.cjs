@@ -283,3 +283,43 @@ test('opening a selected saved-chat tab starts its instructions without taking o
     assert.equal(h.sessionStore.webcodexState.session.tabId,pending?1:2);
   }
 });
+
+
+function recoveringGate(paused=false){
+  const session=recoveringLocal(paused);
+  Object.assign(session,{connected:true,transport:'gate',gateUrl:'https://gate.example',accessToken:'token'});
+  Object.assign(session.session,{transport:'gate',agentId:'remote',operationId:'original-gate-id'});
+  return session;
+}
+
+test('known Gate ID with missing agent journal explicitly recreates the same saved intent once',async()=>{
+  const session=recoveringGate(),requests=[];session.session.dispatchArgs={path:'exact-path',delivery:'file'};
+  const h=harness({session,gateAuth:true,operations:{gateClientFactory:()=>({
+    initialize:async()=>({}),getOperation:async id=>{requests.push(['lookup',id]);return{id,status:'not_found'};},
+    createOperation:async request=>{requests.push(['create',structuredClone(request)]);return{id:'original-gate-id',status:'completed',result:{content:[{type:'text',text:'recovered'}]}};}
+  })}});
+  const state=await recoverOnce(h);
+  assert.deepEqual(requests,[['lookup','original-gate-id'],['create',{key:'saved-key',name:'read_file',arguments:{path:'exact-path',delivery:'file'},agentId:'remote'}]]);
+  assert.equal(state.operationId,'original-gate-id');assert.equal(state.operationKey,'saved-key');assert.equal(state.phase,'result_ready');assert.equal(h.calls.local,0);
+});
+
+test('paused or revoked Gate recovery never posts a missing known-ID operation',async()=>{
+  for(const paused of [true,false]){
+    const session=recoveringGate(paused);session.session.pendingCall={name:'write_file',arguments:{path:'x'}};session.session.autoApprove=false;
+    let creates=0;
+    const h=harness({session,gateAuth:true,operations:{gateClientFactory:()=>({initialize:async()=>({}),getOperation:async id=>({id,status:'not_found'}),createOperation:async()=>{creates++;throw Error('must not post');}})}});
+    const state=await recoverOnce(h);assert.equal(creates,0);assert.equal(state.operationId,'original-gate-id');
+    assert.equal(state.phase,paused?'paused':'waiting_approval');
+  }
+});
+
+test('lost Gate recovery POST looks up the original ID and pinned route on the next attempt',async()=>{
+  const requests=[];let posted=false;
+  const h=harness({session:recoveringGate(),gateAuth:true,operations:{gateClientFactory:()=>({
+    initialize:async()=>({}),getOperation:async id=>{requests.push(['lookup',id]);return posted?{id,status:'completed',result:{content:[{type:'text',text:'saved'}]}}:{id,status:'not_found'};},
+    createOperation:async request=>{requests.push(['create',request.key]);posted=true;throw Error('response lost');}
+  })}});
+  const first=await recoverOnce(h);assert.equal(first.phase,'recovering');assert.equal(first.operationId,'original-gate-id');
+  const second=await recoverOnce(h);assert.equal(second.phase,'result_ready');assert.equal(second.operationId,'original-gate-id');
+  assert.deepEqual(requests,[['lookup','original-gate-id'],['create','saved-key'],['lookup','original-gate-id']]);assert.equal(h.calls.local,0);
+});
