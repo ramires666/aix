@@ -95,7 +95,9 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   assert.equal(pdfRead.status,'completed');assert.equal(pdfRead.result.structuredContent.attachment.mimeType,'application/pdf');
   assert.deepEqual(Buffer.from(pdfRead.result.content.find(item=>item.type==='resource').resource.blob,'base64'),pdf);
   client.close(); await stop(child); child = start();
-  ({ client } = await discover({ endpoint, agentIdentity }));
+  // Concurrent real-agent tests may occupy the previous port during the restart.
+  ({ client } = await discover({ agentIdentity }));
+  assert.equal(client.agentIdentity,agentIdentity);
   assert.deepEqual(await client.getOperation(op.operation_id), op);
   assert.deepEqual(await client.getOperationByKey(args.key), op);
   assert.deepEqual(await client.getOperationByKey('lost-before-id'), lost);
