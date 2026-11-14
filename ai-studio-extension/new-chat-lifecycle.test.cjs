@@ -4,6 +4,8 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const WebCodexProtocol = require('./protocol.js');
+const submitControls = require('./studio-adapter.js')({},{});
+const { Node } = require('./test-fixtures/studio-dom.cjs');
 
 const KEY = 'webcodexState', TOKEN = 'test-token';
 const tool = { name: 'read_file', description: 'test', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false } };
@@ -49,6 +51,11 @@ function harness({manualClock=false,tools=[tool]}={}) {
     tabs: { get: async id => ({ id, url: 'https://aistudio.google.com/app/prompts/chat' }), sendMessage: async (_id, msg) => new Promise(resolve => { messages.push(structuredClone(msg)); const listener = contentListeners[0]; if (!listener) throw Error('No content listener'); const async = listener(msg, {}, resolve); if (async !== true && !['studio.stage'].includes(msg.type)) resolve(undefined); }) }
   };
   const adapters = { createAdapter: () => ({
+    isSubmitControl:button=>{
+      if(!button)return false;
+      const control=new Node('button',{'aria-label':button.getAttribute?.('aria-label')||''},button.innerText||button.textContent||'');
+      return submitControls.isSubmitControl(control);
+    },
     inspect: () => ({ supported, generating, controlsPending: false, editorEmpty, conversationKey, latestModel: model, latestUser, modelAfterUser,historyAnchor,historyStart, error: supported ? '' : 'editor unavailable' }),
     stageSystemInstructions: async text => { if (systemStageFails-- > 0) return false; staged.push({ kind: 'system', text }); return true; },
     getSystemStageError: () => 'transient system editor', stage: text => { staged.push({ kind: 'turn', text }); editorEmpty = false; return true; },
