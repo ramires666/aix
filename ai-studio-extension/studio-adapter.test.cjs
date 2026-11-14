@@ -120,6 +120,18 @@ test('stages a bounded system instruction block and preserves surrounding user t
   assert.equal(state.run.clicked, undefined, 'staging never runs the prompt');
 });
 
+test('closes the existing system dialog using its header button after updating nested instructions',async()=>{
+  const state=setup({draft:'keep this draft'});
+  const dialog=state.root.add(new Node('section',{role:'dialog','aria-label':'System instructions'}));
+  const header=dialog.add(new Node('header'));header.add(new Node('h2',{},'System instructions'));
+  const close=header.add(new Node('button',{'aria-label':'Close panel'}));close.click=()=>{dialog.isConnected=false;dialog.remove();};
+  const body=dialog.add(new Node('div')),editor=body.add(new Textarea('My own rules.'));
+  editor.attrs.placeholder='Optional tone and style instructions for the model';
+  assert.equal(await state.adapter.stageSystemInstructions('Helper tools'),true,state.adapter.getSystemStageError());
+  assert.equal(dialog.isConnected,false);assert.match(editor.value,/My own rules\.[\s\S]*Helper tools/);
+  assert.equal(state.editor.value,'keep this draft');assert.equal(state.run.clicked,undefined);
+});
+
 test('skips input and Save when the managed block is already current, then closes its panel', async () => {
   const original = 'Keep these user instructions.\n<!-- HELPER BEGIN -->\nmanaged instructions\n<!-- HELPER END -->';
   const state = systemSetup({ original });

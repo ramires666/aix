@@ -118,6 +118,12 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   }
   document.body.append(choices);
   if(choices.clientHeight<=150||choices.scrollHeight>choices.clientHeight||getComputedStyle(choices).maxHeight!=='none'||choices.querySelector('input').getBoundingClientRect().width>32)throw Error('tool choices were compressed into a nested scroll area');cases++;
+  const systemDialog=document.createElement('section');systemDialog.setAttribute('role','dialog');systemDialog.setAttribute('aria-label','System instructions');
+  const closeSystem=document.createElement('button');closeSystem.setAttribute('aria-label','Close panel');closeSystem.addEventListener('click',()=>systemDialog.remove());
+  const systemBody=document.createElement('div'),systemHeading=document.createElement('h2'),systemEditor=document.createElement('textarea');
+  systemHeading.textContent='System instructions';systemEditor.placeholder='Optional tone and style instructions for the model';systemEditor.value='Preserve my rules.';
+  systemBody.append(systemHeading,systemEditor);systemDialog.append(closeSystem,systemBody);document.body.append(systemDialog);
+  if(!await adapter.stageSystemInstructions('Helper test rules')||systemDialog.isConnected||!systemEditor.value.includes('Preserve my rules.')||!systemEditor.value.includes('Helper test rules'))throw Error('system instructions dialog stayed open or lost user rules');cases++;
   document.getElementById('check').textContent='PASS:'+cases;
 } catch(error) {document.getElementById('check').textContent='FAIL:'+error.message;}
 })();
@@ -132,5 +138,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:82');t.diagnostic('82 scenarios passed in installed Chrome, including full tool list, Run Ctrl and native file upload');
+  assert.equal(result,'PASS:83');t.diagnostic('83 scenarios passed in installed Chrome, including automatic system dialog close, full tool list and Run Ctrl');
 });

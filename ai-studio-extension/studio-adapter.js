@@ -30,6 +30,8 @@
   };
   const systemPanelForEditor = (editor) => {
     if (attr(editor, 'placeholder') !== 'Optional tone and style instructions for the model') return null;
+    for(let node=editor.parentElement||editor.parent;node;node=node.parentElement||node.parent)
+      if(node.matches?.('ms-system-instructions')||node.matches?.('[role="dialog"]'))return node;
     const matches = elements('textarea').filter(el => attr(el, 'placeholder') === 'Optional tone and style instructions for the model');
     const headings = elements('h1, h2, h3').filter(el => text(el).toLowerCase() === 'system instructions');
     if (matches.length !== 1 || matches[0] !== editor) return null;
@@ -361,14 +363,14 @@
     const presetName = 'Helper',legacyPresetName='WebCodex MCP';
     const presetNames=[presetName,legacyPresetName];
     const preferredPreset=items=>{const current=items.filter(el=>text(el)===presetName);return current.length?current:items.filter(el=>text(el)===legacyPresetName);};
-    let panel = null, openedByUs = false;
+    let panel = null;
     const alreadyOpen = panels();
     if (alreadyOpen.length === 1) panel = alreadyOpen[0];
     else if (!alreadyOpen.length) {
       const openers = elements('button').filter(el => exactLabel(el, ['system instructions']));
       if (openers.length !== 1) return fail(`System instructions opener not unique (count=${openers.length})`);
       const before = new Set(alreadyOpen);
-      openers[0].click(); openedByUs = true;
+      openers[0].click();
       for (let attempt = 0; attempt <= 60; attempt++) {
         if (elements('textarea').filter(el => attr(el, 'placeholder') === 'Optional tone and style instructions for the model').length > 1) return fail(`System instructions pane not found (duplicate editor placeholders=${elements('textarea').filter(el => attr(el, 'placeholder') === 'Optional tone and style instructions for the model').length})`);
         const matches = panels(), opened = matches.filter(candidate => !before.has(candidate));
@@ -479,13 +481,13 @@
         await wait();
       }
     }
-    if (openedByUs && !panels().includes(panel)) return true;
+    if (!panels().includes(panel)) return true;
     const close = controls(panel).filter(el => labels(el).some(label => /close/.test(label)));
-    if (openedByUs && close.length === 1) {
+    if (close.length === 1) {
       close[0].click();
       for (let attempt = 0; attempt <= 60 && panels().includes(panel); attempt++) if (attempt < 60) await wait();
       if (panels().includes(panel)) return fail('System instructions close not completed');
-    } else if (openedByUs && close.length > 1) return fail(`System instructions close not completed (close controls=${close.length})`);
+    } else if (close.length > 1) return fail(`System instructions close not completed (close controls=${close.length})`);
     return true;
   };
   const deliveryTurns = (operationId, expectedText) => {
