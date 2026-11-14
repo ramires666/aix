@@ -30,8 +30,12 @@
   };
   const systemPanelForEditor = (editor) => {
     if (attr(editor, 'placeholder') !== 'Optional tone and style instructions for the model') return null;
-    for(let node=editor.parentElement||editor.parent;node;node=node.parentElement||node.parent)
-      if(node.matches?.('ms-system-instructions')||node.matches?.('[role="dialog"]'))return node;
+    let systemPanel=null;
+    for(let node=editor.parentElement||editor.parent;node;node=node.parentElement||node.parent){
+      if(node.matches?.('[role="dialog"]')||node.matches?.('mat-dialog-container'))return node;
+      if(!systemPanel&&node.matches?.('ms-system-instructions'))systemPanel=node;
+    }
+    if(systemPanel)return systemPanel;
     const matches = elements('textarea').filter(el => attr(el, 'placeholder') === 'Optional tone and style instructions for the model');
     const headings = elements('h1, h2, h3').filter(el => text(el).toLowerCase() === 'system instructions');
     if (matches.length !== 1 || matches[0] !== editor) return null;
@@ -367,7 +371,7 @@
         const panel = systemPanelForEditor(editors[0]);
         if (panel && !known.includes(panel)) known.push(panel);
       }
-      return known;
+      return known.filter(panel=>!known.some(other=>other!==panel&&other.contains?.(panel)));
     };
     const controls = (panel) => elements('button', panel);
     const wait = () => new Promise(resolve => (document.defaultView?.setTimeout || setTimeout)(resolve, 50));
