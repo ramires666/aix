@@ -3,6 +3,23 @@ const assert = require('node:assert/strict');
 const { createClient, ENDPOINTS } = require('./local-client.js');
 function reply(request, result) { return new Response(JSON.stringify({ id: JSON.parse(request.body).id, result })); }
 
+test('negotiates read-only key lookup and refuses unsupported agents without sending', async () => {
+  for (const supported of [true, false]) {
+    const methods = [];
+    const client = createClient({ endpoint: ENDPOINTS[0], agentIdentity: 'one', fetchImpl: async (_url, request) => {
+      const message = JSON.parse(request.body); methods.push(message.method);
+      if (message.method === 'initialize') return reply(request, { localAgent: { id: 'one' }, studioOperations: { lookupByKey: supported } });
+      assert.equal(message.params.key, 'saved-key');
+      return reply(request, { status: 'not_found' });
+    } });
+    await client.initialize();
+    if (supported) assert.equal((await client.getOperationByKey('saved-key')).status, 'not_found');
+    else assert.throws(() => client.getOperationByKey('saved-key'), error => error.code === 'LOOKUP_UNSUPPORTED');
+    assert.deepEqual(methods, supported ? ['initialize', 'operations/lookup'] : ['initialize']);
+    client.close();
+  }
+});
+
 test('discovers the first available local agent without Native Messaging or Gate and pins later calls', async () => {
   const calls = [];
   const client = createClient({ extensionId: 'test-extension', fetchImpl: async (url, request) => {

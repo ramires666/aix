@@ -3,9 +3,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -63,5 +65,12 @@ func atomicReplace(source, destination string) error {
 	if err != nil {
 		return err
 	}
-	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+	for attempt := 0; ; attempt++ {
+		err = windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
+		if attempt == 6 || !errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
+			return err
+		}
+		// Windows readers and file scanners can briefly hold a replacement target open.
+		time.Sleep(time.Duration(1<<attempt) * 5 * time.Millisecond)
+	}
 }

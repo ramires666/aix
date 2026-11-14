@@ -12,7 +12,7 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   const appdata = path.join(temp, 'appdata'), root = path.join(temp, 'files');
   fs.mkdirSync(root);
   const executable = process.env.WEBCODEX_TEST_AGENT_PATH || path.resolve(__dirname, '..', 'bin', 'ai-studio-bridge', 'webcodex-agent.exe');
-  const env = { ...process.env, APPDATA: appdata, LOCALAPPDATA: path.join(temp, 'localappdata'), WEBCODEX_ALLOWED_ROOTS: root, WEBCODEX_GATE_URL: 'http://127.0.0.1:1', WEBCODEX_AGENT_TOKEN: 'unused-local-test' };
+  const env = { ...process.env, APPDATA: appdata, LOCALAPPDATA: path.join(temp, 'localappdata'), WEBCODEX_ALLOWED_ROOTS: root, WEBCODEX_GATE_URL: '', WEBCODEX_AGENT_TOKEN: '' };
   const children = [];
   let logs = '';
   function start() {
@@ -35,6 +35,8 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   let { client, init } = await discover();
   assert.equal(init.serverInfo.version, '1.5.0-ai-studio-alpha.6');
   const endpoint = client.endpoint, agentIdentity = client.agentIdentity;
+  assert.equal(init.studioOperations.lookupByKey,true);
+  assert.equal((await client.getOperationByKey('never-sent')).status,'not_found');
   const tools = await client.listTools();
   assert.ok(tools.some(tool => tool.name === 'exec_command'));
   assert.equal((await client.listAgents())[0].id, 'local');
@@ -45,6 +47,23 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   const op = await client.createOperation(args);
   assert.equal(op.status, 'completed', JSON.stringify(op));
   assert.equal(fs.readFileSync(file, 'utf8'), 'local works\n');
+  let lostCreates=0;
+  const lossy=createClient({endpoint,agentIdentity,extensionId:'lgiihodklblifecheadnfjkaokmmfikk',fetchImpl:async(url,request)=>{
+    const response=await fetch(url,request);
+    if(JSON.parse(request.body).method==='operations/create'){
+      lostCreates++;
+      await response.text();
+      throw new TypeError('lost response before receiving operation ID');
+    }
+    return response;
+  }});
+  await lossy.initialize();
+  const lostPath=path.join(root,'lost-response.txt');
+  await assert.rejects(lossy.createOperation({key:'lost-before-id',name:'write_file',arguments:{path:lostPath,content:'once',if_absent:true},agentId:'local'}),error=>error.code==='NATIVE_DISCONNECTED');
+  fs.writeFileSync(lostPath,'after');
+  const lost=await lossy.getOperationByKey('lost-before-id');
+  assert.equal(lost.status,'completed');assert.equal(lostCreates,1);assert.equal(fs.readFileSync(lostPath,'utf8'),'after');
+  lossy.close();
   const read = await client.createOperation({ key: 'local-read', name: 'read_file', arguments: { path: file }, agentId: 'local' });
   assert.match(JSON.stringify(read), /local works/);
   assert.equal((await fetch(endpoint + '/studio/rpc', { method: 'POST', headers: { Origin: 'https://aistudio.google.com', 'Content-Type': 'application/json', 'X-WebCodex-Extension': 'lgiihodklblifecheadnfjkaokmmfikk' }, body: '{}' })).status, 403);
@@ -72,6 +91,8 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   client.close(); await stop(child); child = start();
   ({ client } = await discover({ endpoint, agentIdentity }));
   assert.deepEqual(await client.getOperation(op.operation_id), op);
+  assert.deepEqual(await client.getOperationByKey(args.key), op);
+  assert.deepEqual(await client.getOperationByKey('lost-before-id'), lost);
   assert.deepEqual(await client.createOperation(args), op);
   client.close();
   assert.match(logs, /Studio local connected: agent=1\.5\.0-ai-studio-alpha\.6 extension=0\.3\.13/);

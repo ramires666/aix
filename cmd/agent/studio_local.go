@@ -148,7 +148,9 @@ func studioLocalHandler(e *nativeExecutor, operations *studioOperations, allowed
 			req.Params = map[string]any{}
 		}
 		// A lost HTTP response must not cancel an operation whose key was persisted.
-		result, rpcErr := handleStudioRequest(context.WithoutCancel(r.Context()), e, operations, req)
+		scoped := *operations
+		scoped.scope = commandHash(map[string]any{"source": "local", "client": id, "agent": identity})
+		result, rpcErr := handleStudioRequest(context.WithoutCancel(r.Context()), e, &scoped, req)
 		if req.Method == "initialize" && rpcErr == nil {
 			if values, ok := result.(map[string]any); ok {
 				values["localAgent"] = map[string]any{"id": identity}

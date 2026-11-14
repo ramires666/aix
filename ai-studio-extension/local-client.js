@@ -8,7 +8,7 @@
   function unavailable(message) { const error = Error(message); error.code = 'NATIVE_DISCONNECTED'; return error; }
   function createClient({ fetchImpl = globalThis.fetch, extensionId = globalThis.chrome?.runtime?.id, version = '0.3.13', endpoint = '', agentIdentity = '' } = {}) {
     if (endpoint && !ENDPOINTS.includes(endpoint)) throw Error('Invalid saved local endpoint');
-    let selected = endpoint, identity = agentIdentity, nextId = 0, closed = false;
+    let selected = endpoint, identity = agentIdentity, nextId = 0, closed = false, lookupByKey = false;
     const active = new Set();
     async function request(base, method, params, signal, timeout = 15000) {
       if (closed) throw unavailable('Local client closed');
@@ -43,7 +43,7 @@
         try {
           const result = await request(base, 'initialize', params, signal, 1000);
           if (!result?.localAgent?.id || (identity && result.localAgent.id !== identity)) throw unavailable('Local agent identity mismatch');
-          selected = base; identity = result.localAgent.id; return result;
+          selected = base; identity = result.localAgent.id; lookupByKey = result.studioOperations?.lookupByKey === true; return result;
         } catch (error) { if (selected || signal?.aborted || closed) throw error; }
       }
       throw unavailable('Запустите локальный webcodex-agent.exe: доступный агент не найден');
@@ -60,8 +60,12 @@
     }
     function createOperation({ key, name, arguments: args, agentId }, signal) { return rpc('operations/create', { key, name, arguments: args, agentId }, signal); }
     function getOperation(id, signal) { return rpc('operations/get', { id }, signal); }
+    function getOperationByKey(key, signal) {
+      if (!lookupByKey) { const error = Error('Обновите агент для восстановления операции по ключу'); error.code = 'LOOKUP_UNSUPPORTED'; throw error; }
+      return rpc('operations/lookup', { key }, signal);
+    }
     function close() { closed = true; for (const controller of active) controller.abort(); }
-    return { rpc, initialize, listTools, listAgents, createOperation, getOperation, close, get endpoint() { return selected; }, get agentIdentity() { return identity; } };
+    return { rpc, initialize, listTools, listAgents, createOperation, getOperation, getOperationByKey, close, get endpoint() { return selected; }, get agentIdentity() { return identity; } };
   }
   return { createClient, ENDPOINTS };
 });

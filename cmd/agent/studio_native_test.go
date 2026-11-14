@@ -3,10 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestStudioOriginAndRuntime(t *testing.T) {
@@ -22,6 +25,9 @@ func TestStudioOriginAndRuntime(t *testing.T) {
 	init, err := handleStudioRequest(context.Background(), e, h, studioRequest{ID: "i", Method: "initialize", Params: map[string]any{"clientInfo": map[string]any{"name": "AI Studio", "version": "test"}}})
 	if err != nil || init == nil {
 		t.Fatalf("initialize: %v %v", init, err)
+	}
+	if init.(map[string]any)["studioOperations"].(map[string]any)["lookupByKey"] != true {
+		t.Fatal("key lookup capability missing")
 	}
 	listed, err := handleStudioRequest(context.Background(), e, h, studioRequest{ID: "l", Method: "tools/list", Params: map[string]any{}})
 	if err != nil {
@@ -112,6 +118,12 @@ func TestStudioOperationIdempotencyAndRecovery(t *testing.T) {
 	if err != nil || got["status"] != "outcome_unknown" {
 		t.Fatalf("crashed operation not recovered as unknown: %#v %v", got, err)
 	}
+	restarted.owner = op.Owner
+	restarted.unconfirmed.Store(op.ID, true)
+	got, err = restarted.get(op.ID)
+	if err != nil || got["status"] != "outcome_unknown" {
+		t.Fatalf("failed result persistence remained running: %#v %v", got, err)
+	}
 	_ = filepath.Base(sumPath)
 }
 
@@ -147,6 +159,116 @@ func TestStudioOperationLookupRejectsNonHexIDs(t *testing.T) {
 	h := &studioOperations{dir: t.TempDir()}
 	if _, err := h.get("op_" + strings.Repeat(".", 64)); err == nil {
 		t.Fatal("accepted non-hex operation id")
+	}
+}
+
+func TestStudioKeyLookupDoesNotExecuteAndPreservesCompletedEffect(t *testing.T) {
+	e, root := testExecutor(t)
+	h, _ := newStudioOperationsAt(t.TempDir())
+	lookup := func(key string) map[string]any {
+		t.Helper()
+		value, err := handleStudioRequest(context.Background(), e, h, studioRequest{Method: "operations/lookup", Params: map[string]any{"key": key}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]any)
+	}
+	if got := lookup("lost-response"); got["status"] != "not_found" {
+		t.Fatalf("missing lookup: %v", got)
+	}
+	if files, _ := os.ReadDir(h.dir); len(files) != 0 {
+		t.Fatal("lookup wrote a journal entry")
+	}
+	path := filepath.Join(root, "once.txt")
+	args := map[string]any{"path": path, "content": "first", "if_absent": true}
+	first, err := h.create(context.Background(), e, "lost-response", "write_file", args, "local")
+	if err != nil || first["status"] != "completed" {
+		t.Fatalf("create: %v %v", first, err)
+	}
+	if err := os.WriteFile(path, []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, _ = newStudioOperationsAt(h.dir)
+	if got := lookup("lost-response"); got["status"] != "completed" || got["operation_id"] != first["operation_id"] {
+		t.Fatalf("restart lookup: %v", got)
+	}
+	var requests sync.WaitGroup
+	for range 12 {
+		requests.Go(func() {
+			result, err := h.create(context.Background(), e, "lost-response", "write_file", args, "local")
+			if err != nil || result["status"] != "completed" {
+				t.Errorf("duplicate: %v %v", result, err)
+			}
+		})
+	}
+	requests.Wait()
+	if data, _ := os.ReadFile(path); string(data) != "after" {
+		t.Fatal("recovery executed the write again")
+	}
+}
+
+func TestStudioJournalScopeCorruptionAndExpiry(t *testing.T) {
+	e, _ := testExecutor(t)
+	h := &studioOperations{dir: t.TempDir(), owner: "owner", scope: "client-a"}
+	key := "scoped"
+	if _, err := h.create(context.Background(), e, key, "list_agents", nil, "local"); err != nil {
+		t.Fatal(err)
+	}
+	other := *h
+	other.scope = "client-b"
+	if _, err := other.get(studioOperationID(key)); err == nil {
+		t.Fatal("another client read the result")
+	}
+	if _, err := other.create(context.Background(), e, key, "list_agents", nil, "local"); err == nil {
+		t.Fatal("another client reused the key")
+	}
+	for _, broken := range []string{"{", `{}`, `{"id":"wrong","status":"completed"}`} {
+		if err := os.WriteFile(h.path(key), []byte(broken), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := h.get(studioOperationID(key))
+		if err != nil || got["status"] != "outcome_unknown" {
+			t.Fatalf("corruption: %v %v", got, err)
+		}
+	}
+	old := fmt.Sprintf("%d-old", time.Now().Add(-25*time.Hour).UnixMilli())
+	for range 2 {
+		got, err := h.create(context.Background(), e, old, "list_agents", nil, "local")
+		if err != nil || got["status"] != "expired" {
+			t.Fatalf("expired key: %v %v", got, err)
+		}
+	}
+	got, err := h.get(studioOperationID(old))
+	if err != nil || got["status"] != "expired" {
+		t.Fatalf("expired tombstone: %v %v", got, err)
+	}
+	legacy := studioOperation{Key: "legacy", ID: studioOperationID("legacy"), Name: "list_agents", Arguments: map[string]any{}, Status: "completed", Result: map[string]any{"content": []any{}}}
+	data, _ := json.Marshal(legacy)
+	if err := os.WriteFile(h.path(legacy.Key), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := h.get(legacy.ID); err != nil || got["status"] != "completed" {
+		t.Fatalf("legacy record: %v %v", got, err)
+	}
+}
+
+func TestStudioConcurrentInitialReservation(t *testing.T) {
+	e, root := testExecutor(t)
+	h, _ := newStudioOperationsAt(t.TempDir())
+	args := map[string]any{"path": filepath.Join(root, "once.txt"), "content": "once", "if_absent": true}
+	var requests sync.WaitGroup
+	for range 20 {
+		requests.Go(func() {
+			got, err := h.create(context.Background(), e, "concurrent", "write_file", args, "local")
+			if err != nil || got["status"] != "running" && got["status"] != "completed" {
+				t.Errorf("concurrent reservation: %v %v", got, err)
+			}
+		})
+	}
+	requests.Wait()
+	got, err := h.get(studioOperationID("concurrent"))
+	if err != nil || got["status"] != "completed" {
+		t.Fatalf("final state: %v %v", got, err)
 	}
 }
 

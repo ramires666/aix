@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -71,6 +74,7 @@ func runStudioNativeHost(origin string) error {
 	if err != nil {
 		return err
 	}
+	h.scope = commandHash(map[string]any{"source": "native", "client": studioAllowedExtensionID(), "roots": roots})
 	for {
 		data, err := readStudioNativeMessage(os.Stdin)
 		if err != nil {
@@ -131,6 +135,23 @@ func handleStudioRequest(ctx context.Context, e *nativeExecutor, h *studioOperat
 			return nil, &studioRPCError{-32000, err.Error()}
 		}
 		return v, nil
+	case "operations/lookup":
+		key, _ := r.Params["key"].(string)
+		if strings.TrimSpace(key) == "" {
+			return nil, &studioRPCError{-32602, "key is required"}
+		}
+		v, err := h.get(studioOperationID(key))
+		if errors.Is(err, os.ErrNotExist) {
+			status := "not_found"
+			if studioOperationExpired(key) {
+				status = "expired"
+			}
+			return map[string]any{"status": status}, nil
+		}
+		if err != nil {
+			return nil, &studioRPCError{-32000, err.Error()}
+		}
+		return v, nil
 	case "tools/list", "tools/call", "initialize", "ping", "notifications/initialized":
 	default:
 		return nil, &studioRPCError{-32601, "method not found"}
@@ -175,6 +196,7 @@ func handleStudioRequest(ctx context.Context, e *nativeExecutor, h *studioOperat
 	}
 	if r.Method == "initialize" {
 		if result, ok := response.Result.(map[string]any); ok {
+			result["studioOperations"] = map[string]any{"lookupByKey": true, "retention": "indefinite", "newKeyMaxAgeSeconds": 86400}
 			if info, ok := result["serverInfo"].(map[string]any); ok {
 				info["version"] = buildinfo.Version
 			}
@@ -252,13 +274,17 @@ func studioOperationDir() (string, error) {
 	return p, nil
 }
 
-type studioOperations struct{ dir, owner string }
+type studioOperations struct {
+	dir, owner, scope string
+	unconfirmed       *sync.Map
+}
 type studioOperation struct {
 	Key       string         `json:"key"`
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
 	Owner     string         `json:"owner,omitempty"`
+	Scope     string         `json:"scope,omitempty"`
 	Status    string         `json:"status"`
 	Result    any            `json:"result,omitempty"`
 }
@@ -271,7 +297,7 @@ func newStudioOperations() (*studioOperations, error) {
 	return newStudioOperationsAt(d)
 }
 func newStudioOperationsAt(d string) (*studioOperations, error) {
-	return &studioOperations{dir: d, owner: browserID("host_")}, nil
+	return &studioOperations{dir: d, owner: browserID("host_"), unconfirmed: &sync.Map{}}, nil
 }
 func (h *studioOperations) path(key string) string {
 	sum := sha256.Sum256([]byte(key))
@@ -289,18 +315,53 @@ func (h *studioOperations) get(id string) (map[string]any, error) {
 	if decodeErr != nil || len(decoded) != sha256.Size {
 		return nil, os.ErrNotExist
 	}
-	b, err := os.ReadFile(filepath.Join(h.dir, id[3:]+".json"))
+	b, err := readStudioOperationFile(filepath.Join(h.dir, id[3:]+".json"))
 	if err != nil {
 		return nil, err
 	}
 	var op studioOperation
-	if json.Unmarshal(b, &op) != nil {
+	if json.Unmarshal(b, &op) != nil || !studioOperationValid(op, id) {
 		return studioOperationResult(studioOperation{ID: id, Status: "outcome_unknown"}), nil
 	}
-	if op.Status == "running" && op.Owner != h.owner {
+	if op.Scope != "" && op.Scope != h.scope {
+		return nil, errors.New("operation belongs to another client or agent")
+	}
+	return h.result(op), nil
+}
+func (h *studioOperations) result(op studioOperation) map[string]any {
+	var unconfirmed bool
+	if h.unconfirmed != nil {
+		_, unconfirmed = h.unconfirmed.Load(op.ID)
+	}
+	if op.Status == "running" && (op.Owner != h.owner || unconfirmed) {
 		op.Status = "outcome_unknown"
 	}
-	return studioOperationResult(op), nil
+	return studioOperationResult(op)
+}
+func studioOperationValid(op studioOperation, id string) bool {
+	if op.ID != id || strings.TrimSpace(op.Key) == "" || studioOperationID(op.Key) != id || op.Name == "" {
+		return false
+	}
+	switch op.Status {
+	case "completed", "failed":
+		return op.Result != nil
+	case "running", "outcome_unknown", "expired":
+		return true
+	default:
+		return false
+	}
+}
+func studioOperationExpired(key string) bool {
+	// Legacy opaque keys have no age. Their saved records remain valid indefinitely.
+	stamp, _, ok := strings.Cut(key, "-")
+	if !ok {
+		return false
+	}
+	millis, err := strconv.ParseInt(stamp, 10, 64)
+	if err != nil || len(stamp) != 13 {
+		return false
+	}
+	return time.Since(time.UnixMilli(millis)) > 24*time.Hour
 }
 func studioOperationResult(op studioOperation) map[string]any {
 	r := map[string]any{"operation_id": op.ID, "status": op.Status}
@@ -314,6 +375,7 @@ func (h *studioOperations) create(ctx context.Context, e *nativeExecutor, key, n
 	if strings.TrimSpace(key) == "" || name == "" {
 		return nil, errors.New("key and name are required")
 	}
+	args = maps.Clone(args)
 	if args == nil {
 		args = map[string]any{}
 	}
@@ -330,39 +392,40 @@ func (h *studioOperations) create(ctx context.Context, e *nativeExecutor, key, n
 	delete(args, "agentId")
 	path := h.path(key)
 	payload, _ := json.Marshal(map[string]any{"name": name, "arguments": args})
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		b, e2 := os.ReadFile(path)
+	op := studioOperation{Key: key, ID: studioOperationID(key), Name: name, Arguments: args, Status: "running", Owner: h.owner, Scope: h.scope}
+	if studioOperationExpired(key) {
+		op.Status = "expired"
+	}
+	data, err := json.Marshal(op)
+	if err != nil {
+		return nil, err
+	}
+	// Publish a complete, synced reservation before any effect or duplicate reader.
+	err = atomicCreate(path, data)
+	var coded *codedError
+	if errors.As(err, &coded) && coded.code == "already_exists" {
+		b, e2 := readStudioOperationFile(path)
 		if e2 != nil {
 			return nil, e2
 		}
 		var old studioOperation
-		if json.Unmarshal(b, &old) != nil {
+		if json.Unmarshal(b, &old) != nil || !studioOperationValid(old, studioOperationID(key)) {
 			return studioOperationResult(studioOperation{ID: studioOperationID(key), Status: "outcome_unknown"}), nil
+		}
+		if old.Scope != "" && old.Scope != h.scope {
+			return nil, errors.New("operation belongs to another client or agent")
 		}
 		other, _ := json.Marshal(map[string]any{"name": old.Name, "arguments": old.Arguments})
 		if string(payload) != string(other) {
 			return nil, errors.New("idempotency key reused with different payload")
 		}
-		if old.Status == "running" && old.Owner != h.owner {
-			old.Status = "outcome_unknown"
-		}
-		return studioOperationResult(old), nil
+		return h.result(old), nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	op := studioOperation{Key: key, ID: studioOperationID(key), Name: name, Arguments: args, Status: "running", Owner: h.owner}
-	data, _ := json.Marshal(op)
-	if _, err = file.Write(data); err == nil {
-		err = file.Sync()
-	}
-	closeErr := file.Close()
-	if err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return nil, err
+	if op.Status == "expired" {
+		return studioOperationResult(op), nil
 	}
 	value, callErr := studioToolCall(ctx, e, name, args, agentID)
 	if callErr != nil {
@@ -378,6 +441,9 @@ func (h *studioOperations) create(ctx context.Context, e *nativeExecutor, key, n
 	}
 	data, _ = json.Marshal(op)
 	if err = atomicWrite(path, data, false); err != nil {
+		if h.unconfirmed != nil {
+			h.unconfirmed.Store(op.ID, true)
+		}
 		return studioOperationResult(op), fmt.Errorf("save operation result: %w", err)
 	}
 	return studioOperationResult(op), nil

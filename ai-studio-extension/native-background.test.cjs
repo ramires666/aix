@@ -5,18 +5,88 @@ const fs=require('node:fs');
 const path=require('node:path');
 const WebCodexProtocol=require('./protocol.js');
 
-function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=false,oauthSuccess=false,bridgeAuto}={}){
+function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=false,oauthSuccess=false,bridgeAuto,operations={}}={}){
   const listeners={},sessionStore={},localStore={bridgeAutoSetupV1:true,...(bridgeAuto?{bridgeAuto}:{}),...(gateAuth?{bridgeAuth:{gateUrl:'https://gate.example',clientId:'id',accessToken:'token'}}:{})},calls={local:0,gate:0};let disconnectLocal=false;
   const event=fn=>({addListener:fn});
   const chrome={runtime:{getURL:p=>'chrome-extension://test/'+p,onMessage:event(fn=>listeners.message=fn)},storage:{session:{setAccessLevel:async()=>{},get:async k=>({[k]:sessionStore[k]}),set:async x=>Object.assign(sessionStore,x)},local:{setAccessLevel:async()=>{},get:async k=>({[k]:localStore[k]}),set:async x=>Object.assign(localStore,x),remove:async k=>delete localStore[k]}},action:{onClicked:event(()=>{})},sidePanel:{open:async()=>{}},alarms:{create(){},onAlarm:event(fn=>listeners.alarm=fn)},permissions:{contains:async()=>true},tabs:{get:async()=>({url:'https://aistudio.google.com/app/prompts/a'}),sendMessage:async()=>({supported:true,ok:true,conversationKey:'chat'})},identity:{getRedirectURL:()=> 'https://extension.test/callback',launchWebAuthFlow:async({url})=>{if(!oauthSuccess)throw Error('OAuth cancelled');const auth=new URL(url);return 'https://extension.test/callback?state='+auth.searchParams.get('state')+'&iss='+encodeURIComponent(auth.origin)+'&code=code'}}};
   if(session)sessionStore.webcodexState={connected:false,gateUrl:'',clientId:'',agents:[],tools:[],session:{phase:'idle',transport:'',agentId:'',toolNames:[],automatic:false,paused:false,turn:'',instructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:null},...session};
   const native={createClient:()=>({endpoint:'http://127.0.0.1:47831',agentIdentity:'agent-one',initialize:async()=>{calls.local++;if(!localAvailable)throw Error('native host unavailable');return{}},listTools:async()=>{if(disconnectLocal){const e=Error('native disconnected');e.code='NATIVE_DISCONNECTED';throw e;}return[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}}]},listAgents:async()=>[{id:'local',online:true}],createOperation:async()=>({content:[{type:'text',text:'local'}]}),getOperation:async()=>({}),rpc:async()=>({}),close:async()=>{}})};
+  const makeLocal = native.createClient;
+  native.createClient = () => ({...makeLocal(),
+    getOperationByKey: operations.unsupported ? undefined : async key => {
+      calls.lookups = (calls.lookups || 0) + 1;
+      assert.equal(key, 'saved-key');
+      if(operations.beforeLookup)await operations.beforeLookup();
+      return operations.result || {status:'not_found'};
+    },
+    createOperation: async request => {
+      calls.creates = (calls.creates || 0) + 1;
+      assert.equal(request.key, 'saved-key');
+      return {operation_id:'saved-id',status:'completed',result:{content:[{type:'text',text:'saved result'}]}};
+    }
+  });
   const gate={createClient:()=>({initialize:async()=>{calls.gate++;if(!gateAvailable)throw Error('gate offline');return{}},listTools:async()=>[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}}],listAgents:async()=>[{id:'remote',online:true}],createOperation:async()=>{calls.gate++;return{content:[{type:'text',text:'gate'}]}},getOperation:async()=>({}),rpc:async()=>({})})};
   const context={chrome,crypto:require('node:crypto').webcrypto,URL,URLSearchParams,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,JSON,Promise,Set,Map,Date,AbortSignal,AbortController,Math,Error,String,Object,Number,RegExp,console,btoa:s=>Buffer.from(s,'binary').toString('base64'),fetch:async()=>({ok:true,text:async()=>JSON.stringify({access_token:'new-token'})}),WebCodexProtocol, WebCodexSession:require('./session-state.js'), WebCodexAttachments:require('./attachments.js'),WebCodexMCP:gate,WebCodexLocal:native,importScripts(){},setTimeout,clearTimeout};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'background.js'),'utf8'),context,{filename:'background.js'});
   return{listeners,sessionStore,localStore,calls,chrome,disconnectLocal:()=>{disconnectLocal=true;}};
 }
 function message(h,msg){return new Promise(resolve=>h.listeners.message(msg,{url:'chrome-extension://test/panel.html'},resolve));}
+
+function recoveringLocal(paused=false){
+  return {session:{phase:paused?'paused':'recovering',pausedPhase:paused?'recovering':'',transport:'local',
+    localEndpoint:'http://127.0.0.1:47831',localAgentIdentity:'agent-one',agentId:'local',toolNames:['read_file'],
+    automatic:false,paused,tabId:1,sessionId:'saved-session',pendingCall:{name:'read_file',arguments:{path:'x'}},
+    operationKey:'saved-key',dispatchArgs:{path:'x'},resultText:'',count:0}};
+}
+async function recoverOnce(h){
+  await message(h,{type:'bridge.status'});
+  h.listeners.alarm({name:'webcodex-recover'});
+  return (await message(h,{type:'bridge.status'})).state.session;
+}
+
+test('lost create response recovers by key with no create or Gate request, including while paused',async()=>{
+  for(const paused of [false,true]){
+    const h=harness({session:recoveringLocal(paused),operations:{result:{operation_id:'saved-id',status:'completed',result:{content:[{type:'text',text:'recovered'}]}}}});
+    const s=await recoverOnce(h);
+    assert.equal(h.calls.lookups,1);assert.equal(h.calls.creates||0,0);assert.equal(h.calls.gate,0);
+    assert.equal(s.operationKey,'saved-key');assert.equal(s.operationId,'saved-id');assert.match(s.resultText,/recovered/);
+    assert.equal(s.phase,paused?'paused':'result_ready');assert.equal(s.paused,paused);
+  }
+});
+
+test('missing key is created only after an unpaused lookup and retains its original intent',async()=>{
+  for(const paused of [false,true]){
+    const h=harness({session:recoveringLocal(paused)});
+    const s=await recoverOnce(h);
+    assert.equal(h.calls.lookups,1);assert.equal(h.calls.creates||0,paused?0:1);assert.equal(h.calls.gate,0);
+    assert.equal(s.operationKey,'saved-key');assert.equal(s.phase,paused?'paused':'result_ready');
+  }
+});
+
+test('old agent, expired key and unknown outcome preserve intent without resending',async()=>{
+  for(const operations of [{unsupported:true},{result:{status:'expired'}},{result:{operation_id:'saved-id',status:'outcome_unknown'}},{result:{}}]){
+    const h=harness({session:recoveringLocal(),operations});
+    const s=await recoverOnce(h);
+    assert.equal(h.calls.creates||0,0);assert.equal(h.calls.gate,0);assert.equal(s.operationKey,'saved-key');
+    if(operations.unsupported)assert.match(s.error,/Обновите агент/);
+    else if(operations.result.status==='expired')assert.equal(s.reasonCode,'operation_expired');
+    else if(operations.result.status==='outcome_unknown')assert.equal(s.reasonCode,'outcome_unknown');
+    else assert.match(s.error,/Invalid operation lookup/);
+  }
+});
+
+test('pause during a missing-key lookup cancels creation before the queued pause is applied',async()=>{
+  let enter,release;
+  const entered=new Promise(resolve=>enter=resolve),blocked=new Promise(resolve=>release=resolve);
+  const h=harness({session:recoveringLocal(),operations:{beforeLookup:async()=>{enter();await blocked;}}});
+  const recovering=recoverOnce(h);
+  await entered;
+  const pausing=message(h,{type:'bridge.pause'});
+  release();
+  await recovering;await pausing;
+  const s=(await message(h,{type:'bridge.status'})).state.session;
+  assert.equal(h.calls.creates||0,0);assert.equal(h.calls.gate,0);assert.equal(s.paused,true);assert.equal(s.operationKey,'saved-key');
+});
 
 test('restores local transport before saved Gate credentials and preserves local agent selection',async()=>{
   const h=harness({gateAuth:true});await new Promise(r=>setTimeout(r,0));
