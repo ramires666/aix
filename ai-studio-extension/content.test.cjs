@@ -636,6 +636,20 @@ test('turnless recovery waits for delivered snapshot proof', async () => {
   assert.equal(h.sent.filter(m=>m.type==='studio.call').length,1);
 });
 
+test('a fresh turnless Run clears a legacy recovery turn and accepts its bound v2 call once',async()=>{
+  const h=harness(),marker='a'.repeat(32);
+  const tool={name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false}};
+  const frame='```text\nHELPER_'+marker+' read_file\npath: W:/file.txt\nEND_'+marker+'\n```';
+  h.state.latestUser={text:'old request'};h.state.latestModel={text:frame};h.state.modelAfterUser=true;
+  await h.send({type:'studio.arm',sessionId:'s1',sessionMarker:marker,turnless:true,recover:true,recoverTurn:'legacy-next-turn',toolNames:[tool]});
+  await h.flush();assert.equal(h.sent.filter(message=>message.type==='studio.call').length,0);
+  h.run('Run Ctrl');
+  h.state.latestUser={text:'new intentional request'};h.state.generating=true;h.mutate();await h.flush();
+  h.state.generating=false;h.state.latestModel={text:frame};h.mutate();await h.flush();
+  assert.equal(h.sent.filter(message=>message.type==='studio.call').length,1);
+  h.mutate();await h.flush();assert.equal(h.sent.filter(message=>message.type==='studio.call').length,1);
+});
+
 test('turnless recovery proof clears recovery when the new call has not rendered yet', async () => {
   const h=harness(),call='```helper-call\n'+JSON.stringify({v:1,name:'tool',arguments:{}})+'\n```';
   h.state.latestUser={text:'request'};h.state.latestModel={text:'previous prose'};h.state.modelAfterUser=false;
