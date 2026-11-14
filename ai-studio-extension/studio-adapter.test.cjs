@@ -4,6 +4,16 @@ const createAdapter = require('./studio-adapter.js');
 
 const { Node, Textarea, setup } = require('./test-fixtures/studio-dom.cjs');
 
+test('a completed answer with the current Run Ctrl label is no longer generating',()=>{
+  for(const runText of ['Run Ctrl','Run\nCtrl','Run Control','Run (Ctrl+Enter)']){
+    const state=setup({runText});
+    const snapshot=state.adapter.inspect();
+    assert.equal(snapshot.supported,true,runText);
+    assert.equal(snapshot.generating,false,runText);
+    assert.equal(snapshot.controlsPending,false,runText);
+  }
+});
+
 test('session context accompanies the existing user request once and preserves its exact text',()=>{
   const marker='a'.repeat(32),request='  Моя задача\r\n\\literal "text"\n';
   const state=setup({draft:request,empty:true});

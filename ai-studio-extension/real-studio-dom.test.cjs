@@ -15,7 +15,7 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const fixture=path.join(temp,'fixture.html');
   const scripts=['vendor/json-tools.js','protocol.js','studio-adapter.js'].map(name=>'<script src="'+pathToFileURL(path.join(__dirname,name)).href+'"></script>').join('');
   fs.writeFileSync(fixture,`<!doctype html><meta charset="utf-8"><title>Helper DOM regression</title>
-<style>.widget {display:grid} .language {display:block} pre {white-space:pre-wrap}</style>
+<style>${fs.readFileSync(path.join(__dirname,'panel.css'),'utf8')} .widget {display:grid} .language {display:block} pre {white-space:pre-wrap}</style>
 <ms-prompt-input-wrapper><textarea></textarea></ms-prompt-input-wrapper>
 <ms-chat-turn data-turn-role="User">Save this file</ms-chat-turn>
 <ms-chat-turn data-turn-role="Model" id="answer"></ms-chat-turn>
@@ -28,6 +28,10 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const attachment='<<<HELPER_FILE_BEGIN:file_1>>>\\n'+content+'\\n<<<HELPER_FILE_END:file_1>>>';
   const adapter=WebCodexStudio.createAdapter(document,{hostname:'aistudio.google.com'});
   let cases=0;
+  const currentRun=document.querySelector('button[aria-label="Run"]');
+  currentRun.removeAttribute('aria-label');currentRun.textContent='Run Ctrl';currentRun.disabled=true;
+  if(adapter.inspect().generating||adapter.inspect().controlsPending)throw Error('completed Run Ctrl answer was considered generating');
+  currentRun.setAttribute('aria-label','Run');currentRun.textContent='Run';currentRun.disabled=false;cases++;
   for(const widgetTag of ['ms-code-block','article','future-widget'])
   for(const headerTag of ['header','div','span'])
   for(const codeTag of ['pre','code','div'])
@@ -107,6 +111,13 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   prompt.addEventListener('drop',event=>{dropped=event.dataTransfer.files[0];chip.textContent=dropped.name;run.disabled=false;});
   const drop=await adapter.attachFiles([new File([source],'drop.txt',{type:'text/plain'})],{key:'native-drop',isCurrent:()=>true});
   if(!drop.ok||await dropped.text()!==source)throw Error('native drag and drop transfer failed');cases++;
+  const choices=document.createElement('div');choices.className='choices';choices.style.width='320px';
+  for(let i=0;i<14;i++){
+    const label=document.createElement('label'),input=document.createElement('input');input.type=i===0?'radio':'checkbox';
+    label.append(input,document.createTextNode('Tool '+i+' — detailed function description that must remain visible in the full list.'));choices.append(label);
+  }
+  document.body.append(choices);
+  if(choices.clientHeight<=150||choices.scrollHeight>choices.clientHeight||getComputedStyle(choices).maxHeight!=='none'||choices.querySelector('input').getBoundingClientRect().width>32)throw Error('tool choices were compressed into a nested scroll area');cases++;
   document.getElementById('check').textContent='PASS:'+cases;
 } catch(error) {document.getElementById('check').textContent='FAIL:'+error.message;}
 })();
@@ -121,5 +132,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:80');t.diagnostic('80 scenarios passed in installed Chrome, including native FileList and drag-and-drop upload');
+  assert.equal(result,'PASS:82');t.diagnostic('82 scenarios passed in installed Chrome, including full tool list, Run Ctrl and native file upload');
 });
