@@ -103,6 +103,8 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   if((await adapter.attachFiles([file],{key:'blocked-file',isCurrent:()=>true})).ok||input.files.length)throw Error('existing attachment removal control was ignored');removeAttachment.remove();cases++;
   const upload=await adapter.attachFiles([file],{key:'native-file',isCurrent:()=>true});
   if(!upload.ok||await input.files[0].text()!==source)throw Error('native FileList upload changed content');
+  let repeatedUploads=0;input.addEventListener('change',()=>repeatedUploads++);
+  if(!adapter.stage('small result metadata')||!(await adapter.attachFiles([file],{key:'native-file',isCurrent:()=>adapter.ownsDraft('small result metadata')})).ok||repeatedUploads)throw Error('resuming an owned upload repeated the transfer or lost the draft');cases++;
   adapter.releaseFiles('native-file');if(input.files.length!==0)throw Error('owned file input was not released');cases++;
   const human=new DataTransfer();human.items.add(new File(['human'],'human.txt'));input.files=human.files;
   const blocked=await adapter.attachFiles([file],{key:'other-file',isCurrent:()=>true});
@@ -114,6 +116,16 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   prompt.addEventListener('drop',event=>{dropped=event.dataTransfer.files[0];chip.textContent=dropped.name;run.disabled=false;});
   const drop=await adapter.attachFiles([new File([source],'drop.txt',{type:'text/plain'})],{key:'native-drop',isCurrent:()=>true});
   if(!drop.ok||await dropped.text()!==source)throw Error('native drag and drop transfer failed');cases++;
+  adapter.releaseFiles('native-drop');chip.textContent='';
+  const copyright=document.createElement('section');copyright.id='copyright-acknowledgement-dialog';copyright.setAttribute('role','dialog');
+  const agree=document.createElement('button');agree.textContent='Agree to the copyright acknowledgement';copyright.append(agree);document.body.append(copyright);
+  let agreements=0;agree.addEventListener('click',()=>{agreements++;copyright.remove();});
+  const unknown=document.createElement('section');unknown.setAttribute('role','dialog');const unknownAgree=agree.cloneNode(true);unknown.append(unknownAgree);document.body.append(unknown);
+  let unknownAgreements=0;unknownAgree.addEventListener('click',()=>unknownAgreements++);
+  if((await adapter.attachFiles([file],{key:'cancelled-modal',isCurrent:()=>false})).ok||agreements)throw Error('cancelled upload accepted a modal');cases++;
+  const acknowledged=await adapter.attachFiles([file],{key:'copyright-file',isCurrent:()=>true});
+  if(!acknowledged.ok||agreements!==1||unknownAgreements)throw Error('upload acknowledgement was missed or another dialog was accepted');
+  adapter.releaseFiles('copyright-file');unknown.remove();cases++;
   const choices=document.createElement('div');choices.className='choices';choices.style.width='320px';
   for(let i=0;i<14;i++){
     const label=document.createElement('label'),input=document.createElement('input');input.type=i===0?'radio':'checkbox';
@@ -141,5 +153,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:84');t.diagnostic('84 scenarios passed in installed Chrome, including tool chips, automatic dialog close, full tool list and Run Ctrl');
+  assert.equal(result,'PASS:87');t.diagnostic('87 scenarios passed in installed Chrome, including upload resumption, scoped acknowledgement, automatic dialog close, full tool list and Run Ctrl');
 });

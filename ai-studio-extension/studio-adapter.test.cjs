@@ -369,6 +369,18 @@ test('preserves an existing user draft and rejects ambiguous editors or active g
   assert.equal(active.adapter.inspect().generating, true);
   assert.equal(active.adapter.stage('later'), false);
 });
+
+test('resumes the exact owned draft without rewriting it and preserves user edits', () => {
+  const { adapter, editor } = setup();
+  assert.equal(adapter.stage('saved result'), true);
+  const events = editor.events.length;
+  assert.equal(adapter.stage('saved result'), true);
+  assert.equal(editor.events.length, events);
+  assert.equal(adapter.stage('another result'), false);
+  editor.value = 'saved result with my edits';
+  assert.equal(adapter.stage('saved result'), false);
+  assert.equal(editor.value, 'saved result with my edits');
+});
 test('stages the initial blank-chat draft while Run is unavailable without submitting it', () => {
   const blank = setup({ empty: true, withoutRun: true });
   blank.location.pathname = '/prompts/new_chat';

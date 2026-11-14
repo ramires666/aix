@@ -248,7 +248,8 @@
   const stage = (value) => {
     const state = inspect();
     const candidateEditors = editors();
-    if (!state.supported || (state.generating && !(state.controlsPending && !state.latestModel)) || candidateEditors.length !== 1 || !state.editorEmpty) return false;
+    if (!state.supported || (state.generating && !(state.controlsPending && !state.latestModel)) || candidateEditors.length !== 1) return false;
+    if (!state.editorEmpty) return ownedDraft?.value === String(value) && editorValue(candidateEditors[0]) === String(value);
     const staged = setEditorValue(candidateEditors[0],value);
     if (staged) ownedDraft = { value: String(value) };
     return staged;
@@ -322,6 +323,16 @@
       }catch(error){return{ok:false,error:'Не удалось передать файл штатному загрузчику: '+error.message};}
     }
     while(isCurrent()){
+      const acknowledgements=elements('#copyright-acknowledgement-dialog');
+      if(acknowledgements.length===1&&uploadOwner.confirmedDialog!==acknowledgements[0]){
+        const buttons=elements('button',acknowledgements[0]).filter(button=>
+          hasLabel(button,['agree to the copyright acknowledgement'])&&!button.disabled&&attr(button,'aria-disabled')!=='true');
+        if(buttons.length===1&&isCurrent()){
+          uploadOwner.confirmedDialog=acknowledgements[0];
+          buttons[0].click();
+          uploadOwner.started=Date.now();
+        }
+      }
       const errors=elements('[role="alert"], .error-message',scope).map(text).filter(Boolean);
       if(errors.length)return{ok:false,error:'AI Studio отклонила вложение: '+errors.join(' ')};
       const busy=elements('[role="progressbar"], mat-progress-bar, mat-spinner, mat-progress-spinner, [aria-busy="true"]',scope).length>0;

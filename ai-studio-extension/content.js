@@ -218,6 +218,8 @@
       if(deliveryPending){reply({ok:false,attempted:true,...state});return;}
       let operationId;try{const result=JSON.parse(m.text);if(!WebCodexProtocol.isResult(result))throw Error();operationId=result.operation_id;}catch{reply({ok:false,attempted:false,...state});return;}
       if(m.attachments?.length&&m.operationId!==operationId){reply({ok:false,attempted:false,...state,error:'File operation does not match the result'});return;}
+      const existing=snapshot(operationId,false,m.text);
+      if(existing.delivered){reply({ok:true,attempted:true,confirmed:true,...existing});return;}
       const deliverySession=sessionId,deliveryNavigation=navigationRevision;
       deliveryPending=true;
       if(m.attachments?.length){

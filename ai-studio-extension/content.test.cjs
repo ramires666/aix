@@ -35,6 +35,17 @@ test('native upload cancellation never clicks Run or loses the operation result'
   assert.equal(h.submitted.length,0);assert.ok(h.sent.some(message=>message.type==='studio.deliveryComplete'&&message.attempted===false));
 });
 
+test('a result sent with native Run is confirmed without another upload or submit',async()=>{
+  const h=harness();await h.send({type:'studio.arm',sessionId:'s1',turnless:true});
+  const text=JSON.stringify({type:'helper-result',operation_id:'op-manual'});
+  h.state.latestUser={text:'```helper-result\n'+text+'\n```',operationId:'op-manual'};
+  const reply=await h.send({type:'studio.deliver',sessionId:'s1',operationId:'op-manual',text,submit:true,attachments:[{name:'already-uploaded.txt'}]});
+  assert.equal(reply.confirmed,true);
+  assert.equal(h.staged.length,0);
+  assert.equal(h.uploaded.length,0);
+  assert.equal(h.submitted.length,0);
+});
+
 function harness({manualClock=false}={}) {
   const listeners = {}, sent = [], timers = new Map(), state = { supported: true, generating: false, editorEmpty: true, conversationKey: 'active-chat', latestModel: { text: 'old answer' }, latestUser: null };
   let timerId = 0, now=10000, submitted = [], staged = [], observerCallback, accepted = true, sendHandler, disconnected = false, cleared = false, submitHandler, uploadHandler;
