@@ -18,7 +18,11 @@ function Invoke-Check([string]$Name, [string]$Program, [string[]]$Arguments) {
     & $Program @Arguments *> $log
     $code = $LASTEXITCODE
     $checks.Add([ordered]@{name=$Name; exitCode=$code; seconds=$timer.Elapsed.TotalSeconds})
-    if ($code -ne 0) { Get-Content -LiteralPath $log -Tail 35; throw "Check failed $Name ($code), log=$log" }
+    if ($code -ne 0) {
+        Select-String -LiteralPath $log -Pattern '^--- FAIL:', '^not ok ', '^# Error', '^panic:' -Context 0,12 | ForEach-Object { $_.ToString() }
+        Get-Content -LiteralPath $log -Tail 35
+        throw "Check failed $Name ($code), log=$log"
+    }
     Write-Output "Passed $Name"
 }
 
