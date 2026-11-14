@@ -26,6 +26,9 @@ type mcpRunner interface {
 // streamOnce holds one outbound NDJSON connection and dispatches gate requests concurrently.
 func streamOnce(ctx context.Context, client *http.Client, gateURL, token string, runner mcpRunner) error {
 	streamURL := gateURL + "/agent/stream?version=" + url.QueryEscape(buildinfo.Version)
+	if executor, ok := runner.(*nativeExecutor); ok && executor.gateOperationDir != "" {
+		streamURL += "&operations=1"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, streamURL, nil)
 	if err != nil {
 		return fmt.Errorf("create stream request: %w", err)
@@ -103,7 +106,13 @@ func handleRequest(
 	defer cancel()
 
 	callCtx = context.WithValue(callCtx, commandRequestID{}, request.ID)
-	response, err := runner.call(callCtx, request.Request)
+	var response json.RawMessage
+	var err error
+	if executor != nil && gateOperationMethod(request.Request) {
+		response, err = executor.callGateOperation(callCtx, request.Request)
+	} else {
+		response, err = runner.call(callCtx, request.Request)
+	}
 	actionResult := formatActionResponse(response, err)
 	if debug {
 		log.Printf("◀ %s (id=%s, elapsed=%s)", actionResult, request.ID, time.Since(started).Round(time.Millisecond))

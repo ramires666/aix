@@ -37,3 +37,20 @@ func TestStreamVersionWireAndLegacyReconnect(t *testing.T) {
 		t.Fatalf("connections = %d, want 2", seen)
 	}
 }
+
+func TestStreamAdvertisesGateJournalOnlyWhenConfigured(t *testing.T) {
+	executor, _ := testExecutor(t)
+	defer executor.Close()
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.Query().Get("operations"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	_ = streamOnce(context.Background(), server.Client(), server.URL, "secret", executor)
+	executor.gateOperationDir = t.TempDir()
+	_ = streamOnce(context.Background(), server.Client(), server.URL, "secret", executor)
+	if len(queries) != 2 || queries[0] != "" || queries[1] != "1" {
+		t.Fatalf("capabilities: %v", queries)
+	}
+}

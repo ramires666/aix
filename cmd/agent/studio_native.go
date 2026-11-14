@@ -430,6 +430,9 @@ func (h *studioOperations) create(ctx context.Context, e *nativeExecutor, key, n
 	value, callErr := studioToolCall(ctx, e, name, args, agentID)
 	if callErr != nil {
 		op.Status = "failed"
+		if callErr.Code == -32000 {
+			op.Status = "outcome_unknown"
+		}
 		op.Result = callErr
 	} else {
 		if result, ok := value.(map[string]any); ok && result["isError"] == true {

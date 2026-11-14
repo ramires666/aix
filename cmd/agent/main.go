@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -108,6 +109,17 @@ func main() {
 		log.Fatalf("initialize local executor: %v", err)
 	}
 	defer executor.Close()
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		log.Fatalf("initialize Gate journal: %v", err)
+	}
+	executor.gateOperationDir = filepath.Join(configDir, "webcodex", "gate-operations", commandHash(map[string]string{"gate": gateURL, "agent": token}))
+	if err := os.MkdirAll(executor.gateOperationDir, 0o700); err != nil {
+		log.Fatalf("initialize Gate journal: %v", err)
+	}
+	if err := privateBrowserDirectory(executor.gateOperationDir); err != nil {
+		log.Fatalf("protect Gate journal: %v", err)
+	}
 	if executor.verbose {
 		log.Printf("agent ready: debug=true log_dir=%q", executor.logDir)
 	} else {

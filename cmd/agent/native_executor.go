@@ -60,6 +60,8 @@ type nativeExecutor struct {
 	remoteBrowser    *remoteBrowserMCP
 	execMu           sync.Mutex
 	browser          *browserManager
+	gateOperationDir string
+	gateOperations   sync.Map
 
 	mu       sync.Mutex
 	sessions map[string]*processSession
