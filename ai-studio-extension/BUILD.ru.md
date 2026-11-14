@@ -12,16 +12,67 @@
 Нужны Go 1.25 или новее и PowerShell; Node.js нужен только для тестов расширения.
 Команды выполняются из корня этого репозитория.
 
+## Полная проверка локального комплекта
+
+Для выпуска выполняется один сценарий из корня репозитория на Windows.
+Нужны Go 1.25.6, Node.js 24.11.1 и установленный Chrome. Исходная версия расширения
+находится в `package.json`, там же записаны версии агента и тестового Gate.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File ./ai-studio-extension/verify-release.ps1
+```
+
+`powershell` запускает отдельный процесс. `-NoProfile` отключает пользовательский
+профиль, `-ExecutionPolicy Bypass` разрешает скрипт в этом процессе, `-File` выбирает
+`ai-studio-extension/verify-release.ps1` от корня репозитория. Без дополнительных
+параметров результат сохраняется в `bin/ai-studio-bridge`. Параметр
+`-OutputDirectory` позволяет указать другую полную папку результатов, например
+`W:\_python\webcdx\tmp\candidate`. Это папка для готовых файлов и отчёта.
+
+Сценарий проверяет версии, JS, четыре Go-пакета и vet, собирает EXE агента,
+проверяет существующую совместимость Gate, упаковывает расширение и запускает
+все обязательные стенды. Пропуск обязательного теста завершает проверку ошибкой.
+ZIP проверяется по исходным байтам и всем подключённым скриптам. Его временные
+метки фиксированы для повторяемой упаковки. Установленный Chrome используется
+с отдельным временным профилем. Подмена `WEBCODEX_TEST_CHROME_PATH` задаёт полный
+путь к своему `chrome.exe`, если браузер установлен в другом месте.
+
+В результате находятся готовый `webcodex-agent.exe`, ZIP расширения,
+`release-manifest.json`, `acceptance-tests.txt` и инструкция установки.
+EXE уже скомпилирован этим сценарием. Отчёт содержит исходный коммит, признак
+изменённых исходников, SHA-256 файлов и результаты проверок. Для выпуска нужен
+отчёт чистого коммита и завершённая живая приёмка этапа 11. Папка временных
+журналов сборки выводится при ошибке и сохраняется внутри `tmp`.
+
+Обновление версии разработчиком выполняется следующей командой после правки
+версии в `ai-studio-extension/package.json`.
+
+```powershell
+node ai-studio-extension/sync-version.cjs
+```
+
+`node` запускает генератор `ai-studio-extension/sync-version.cjs` от корня проекта.
+Он обновляет manifest, lock-файл, версии content-скрипта, клиентов и панели.
+Параметр `--check` проверяет согласованность без записи и применяется при выпуске.
+Для установки готового комплекта генератор и самостоятельная сборка не нужны.
+
+Workflow `local-release-required` запускает ту же полную проверку при push в main
+и в pull request. На 14 ноября 2026 года GitHub Actions включены, защита main
+выключена. Само наличие workflow не делает проверку обязательным условием push.
+Настройки защиты ветки в рамках этапа 10 проверены через API.
+
 ## Проверка исходников
 
 ```powershell
-go test ./...
-go vet ./...
+go test ./cmd/agent ./cmd/gate ./internal/buildinfo ./internal/protocol
+go vet ./cmd/agent ./cmd/gate ./internal/buildinfo ./internal/protocol
 node --test ai-studio-extension/*.test.cjs
 ```
 
 `go test` запускает Go-тесты, `go vet` проверяет подозрительные конструкции.
-Аргумент `./...` выбирает все Go-пакеты текущего репозитория.
+Аргументы `./cmd/agent` и `./cmd/gate` выбирают агент и Gate.
+`./internal/buildinfo` выбирает общие сведения о версии, `./internal/protocol` —
+протокол обмена. Временные каталоги в этот набор не входят.
 `node` запускает Node.js, `--test` включает его встроенный тестовый режим;
 `ai-studio-extension/*.test.cjs` выбирает тестовые файлы расширения. Живой тест
 в вашем аккаунте AI Studio эти проверки не заменяют.
@@ -46,7 +97,7 @@ Remove-Item Env:WEBCODEX_BROWSER_REAL_TEST
 `C:\Program Files\Google\Chrome\Application\chrome.exe`. Если он установлен иначе,
 перед тестом задайте переменную `WEBCODEX_TEST_CHROME_PATH` с полным путём к своему
 `chrome.exe`. Тест создаёт отдельный временный профиль внутри `tmp`, проверяет
-60 сценариев: сочетания элементов DOM без искусственных текстовых переносов между блоками,
+80 сценариев — сочетания элементов DOM без искусственных текстовых переносов между блоками,
 разбор Windows-пути, чтение идентификатора отрисованного результата, настоящие FileList
 и drag-and-drop, ожидание готовности загрузки и защиту пользовательских вложений. После проверки
 он удаляет временные файлы. Параметры `--headless` и `--disable-gpu` запускают браузер
@@ -58,13 +109,13 @@ Remove-Item Env:WEBCODEX_BROWSER_REAL_TEST
 `--dump-dom` возвращает DOM локальной страницы. `Remove-Item` удаляет включающую тест
 переменную из текущего окна; `Env:WEBCODEX_BROWSER_REAL_TEST` обозначает её в окружении
 PowerShell. Проверка не открывает аккаунт AI Studio и не заменяет проверку живой вкладки.
-Готовый агент alpha.6 уже скомпилирован в `bin/ai-studio-bridge/webcodex-agent.exe`;
-для этого теста его пересобирать не нужно.
+Для проверки агента используйте EXE alpha.7, полученный успешной сборкой ниже.
+Самому тесту DOM агент не требуется.
 
 ### Необязательная проверка локального агента на Windows
 
 Сначала соберите агент командой из раздела Windows ниже. Для локального режима
-нужен только EXE агента версии `1.5.0-ai-studio-alpha.6`; Gate собирать, обновлять
+нужен только EXE агента версии `1.5.0-ai-studio-alpha.7`; Gate собирать, обновлять
 или запускать не нужно. Выполните:
 
 ```powershell
@@ -85,10 +136,10 @@ Remove-Item Env:WEBCODEX_LOCAL_REAL_TEST
 ### Необязательная проверка собранных Gate и агента на Windows
 
 Для этого отдельного теста нужны `webcodex-gate.exe` версии `1.5.0-ai-studio-alpha.5`
-и `webcodex-agent.exe` версии `1.5.0-ai-studio-alpha.6` в `bin/ai-studio-bridge`.
+и `webcodex-agent.exe` версии `1.5.0-ai-studio-alpha.7` в `bin/ai-studio-bridge`.
 В Git готовых EXE нет: если они отсутствуют, сначала выполните Windows-сборку из
-следующего раздела. Для текущего исправления собраны оба EXE; работающая удалённая
-установка Gate автоматически не обновлялась.
+следующего раздела. Полный сценарий проверки собирает агент и отдельный тестовый EXE Gate.
+Установка компонентов выполняется по инструкции готового комплекта.
 Следующие команды запускают локальный тест
 с временной базой Gate и без AI Studio или ключа модели. Выполните её из корня
 репозитория в PowerShell на Windows:
@@ -114,7 +165,7 @@ Remove-Item Env:WEBCODEX_BRIDGE_REAL_TEST
 ```powershell
 New-Item -ItemType Directory -Path bin/ai-studio-bridge -Force
 go build -ldflags '-X webcodex/internal/buildinfo.Version=1.5.0-ai-studio-alpha.5' -o bin/ai-studio-bridge/webcodex-gate.exe ./cmd/gate
-go build -ldflags '-X webcodex/internal/buildinfo.Version=1.5.0-ai-studio-alpha.6' -o bin/ai-studio-bridge/webcodex-agent.exe ./cmd/agent
+go build -ldflags '-X webcodex/internal/buildinfo.Version=1.5.0-ai-studio-alpha.7' -o bin/ai-studio-bridge/webcodex-agent.exe ./cmd/agent
 ```
 
 `New-Item` создаёт папку; `-ItemType Directory` выбирает тип «каталог», `-Path`
@@ -122,7 +173,7 @@ go build -ldflags '-X webcodex/internal/buildinfo.Version=1.5.0-ai-studio-alpha.
 уже существующую папку. `go build` компилирует программу. `-ldflags` передаёт
 заключённую в кавычки строку линковщику; `-X` устанавливает строковую переменную
 `webcodex/internal/buildinfo.Version` в указанную версию: Gate —
-`1.5.0-ai-studio-alpha.5`, агент — `1.5.0-ai-studio-alpha.6`.
+`1.5.0-ai-studio-alpha.5`, агент — `1.5.0-ai-studio-alpha.7`.
 `-o` задаёт путь готового EXE: первая команда создаёт Gate, вторая — агент.
 `./cmd/gate` и `./cmd/agent` выбирают соответствующий пакет исходников.
 Команды рассчитаны на Go для Windows x64 без переопределённых GOOS/GOARCH.
@@ -171,8 +222,8 @@ npm.cmd --prefix ai-studio-extension run build:vendor
 esbuild версии `0.28.2` объединяет библиотеки в локальный модуль без `eval` и копирует
 лицензии в `vendor/LICENSES.txt`. Папка `node_modules` не добавляется в Git или ZIP.
 Эти команды не обновляют и не перезапускают рабочие агент, Gate или расширение.
-Агент alpha.6 уже скомпилирован в `bin/ai-studio-bridge/webcodex-agent.exe`; для
-изменений JavaScript-библиотек его пересобирать не нужно. После изменения исходников
+Готовый EXE агента появляется в `bin/ai-studio-bridge/webcodex-agent.exe`
+после успешного полного сценария сборки. После изменения исходников
 расширения упакуйте ZIP следующей командой; установка готового ZIP описана в README.
 
 ```powershell

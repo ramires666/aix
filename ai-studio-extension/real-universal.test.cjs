@@ -5,6 +5,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { createClient } = require('./local-client.js');
+const {agent:agentVersion}=require('./package.json').webcodexRelease;
 
 test('one compiled agent handles local and Gate requests separately and survives Gate reconnect', { skip: process.env.WEBCODEX_UNIVERSAL_REAL_TEST !== '1' || process.platform !== 'win32', timeout: 45000 }, async t => {
   const tempParent = path.resolve(__dirname, '..', 'tmp'); fs.mkdirSync(tempParent, { recursive: true });
@@ -20,7 +21,7 @@ test('one compiled agent handles local and Gate requests separately and survives
       assert.equal(request.headers.authorization, 'Bearer fixture-agent-token');
       if (request.url === '/agent/config') { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify({ allowed_roots: gateRoot })); return; }
       if (request.url.startsWith('/agent/stream?')) {
-        assert.match(request.url, /version=1\.5\.0-ai-studio-alpha\.6/);
+        assert.equal(new URL(request.url,'http://localhost').searchParams.get('version'),agentVersion);
         response.setHeader('X-WebCodex-Version', 'fixture-gate-version'); response.setHeader('Content-Type', 'application/x-ndjson'); response.write('\n'); stream = response; connections++; return;
       }
       if (request.url === '/agent/result') {
@@ -49,7 +50,7 @@ test('one compiled agent handles local and Gate requests separately and survives
   await waitFor(() => connections === 1 && /Studio local ready: (http:\/\/127\.0\.0\.1:\d+)/.test(logs));
   const endpoint = /Studio local ready: (http:\/\/127\.0\.0\.1:\d+)/.exec(logs)[1];
   localClient = createClient({ endpoint, extensionId: 'lgiihodklblifecheadnfjkaokmmfikk' });
-  assert.equal((await localClient.initialize()).serverInfo.version, '1.5.0-ai-studio-alpha.6');
+  assert.equal((await localClient.initialize()).serverInfo.version, agentVersion);
   function gateCall(name, args = {}) {
     const id = 'gate-' + ++nextId;
     return new Promise((resolve, reject) => {
@@ -76,5 +77,5 @@ test('one compiled agent handles local and Gate requests separately and survives
   await waitFor(() => connections >= 2);
   assert.equal((await gateCall('exec_command', gateArgs)).structuredContent.session_id, gateCommand.structuredContent.session_id);
   assert.match(logs, /\[source=local\].*tool="read_file"/); assert.match(logs, /\[source=gate\].*tool="read_file"/);
-  assert.match(logs, /agent version=1\.5\.0-ai-studio-alpha\.6 gate version=fixture-gate-version/);
+  assert.ok(logs.includes('agent version='+agentVersion+' gate version=fixture-gate-version'));
 });

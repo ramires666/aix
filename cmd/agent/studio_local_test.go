@@ -3,14 +3,43 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+
+	"webcodex/internal/buildinfo"
 )
+
+func TestStudioLocalLogsReceivedVersionOnEveryConnection(t *testing.T) {
+	e, _ := testExecutor(t)
+	h := studioLocalHandler(e, &studioOperations{dir: t.TempDir()}, map[string]bool{studioExtensionID: true}, "127.0.0.1:47831", "agent-one")
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+	for _, version := range []string{"remote-version", "remote-version", ""} {
+		body, _ := json.Marshal(studioRequest{ID: "init", Method: "initialize", Params: map[string]any{"clientInfo": map[string]any{"version": version}}})
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:47831/studio/rpc", bytes.NewReader(body))
+		r.RemoteAddr = "127.0.0.1:12345"
+		r.Header.Set("X-WebCodex-Extension", studioExtensionID)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("initialize: %s", w.Body)
+		}
+	}
+	prefix := "Studio local connected: agent=" + buildinfo.Version + " extension="
+	if strings.Count(output.String(), prefix+"remote-version") != 2 || !strings.Contains(output.String(), prefix+"версия не передана") {
+		t.Fatalf("received/reconnected/legacy versions: %s", output.String())
+	}
+}
 
 func TestStudioLocalAuthorizationAndIdentity(t *testing.T) {
 	e, _ := testExecutor(t)

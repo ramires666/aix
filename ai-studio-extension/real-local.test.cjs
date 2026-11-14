@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createClient } = require('./local-client.js');
+const release = require('./package.json');
 
 test('compiled local agent discovers, executes once and reconnects without Gate or host registration', { skip: process.env.WEBCODEX_LOCAL_REAL_TEST !== '1' || process.platform !== 'win32', timeout: 60000 }, async t => {
   const tempParent = path.resolve(__dirname, '..', 'tmp');
@@ -33,7 +34,7 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   }
   let child = start();
   let { client, init } = await discover();
-  assert.equal(init.serverInfo.version, '1.5.0-ai-studio-alpha.6');
+  assert.equal(init.serverInfo.version, release.webcodexRelease.agent);
   const endpoint = client.endpoint, agentIdentity = client.agentIdentity;
   assert.equal(init.studioOperations.lookupByKey,true);
   assert.equal((await client.getOperationByKey('never-sent')).status,'not_found');
@@ -100,7 +101,7 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   assert.deepEqual(await client.getOperationByKey('lost-before-id'), lost);
   assert.deepEqual(await client.createOperation(args), op);
   client.close();
-  assert.match(logs, /Studio local connected: agent=1\.5\.0-ai-studio-alpha\.6 extension=0\.3\.13/);
+  assert.ok(logs.includes('Studio local connected: agent='+release.webcodexRelease.agent+' extension='+release.version));
   assert.match(logs, /Gate не используется/);
   assert.doesNotMatch(logs, /connected to Gate|Не удалось получить настройки/);
   assert.equal(fs.existsSync(path.join(appdata, 'webcodex', 'studio', 'native-host.json')), false);

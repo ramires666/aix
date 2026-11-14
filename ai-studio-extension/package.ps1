@@ -25,7 +25,12 @@ $archiveStream = [System.IO.File]::Open($archive, [System.IO.FileMode]::Create)
 $zip = New-Object System.IO.Compression.ZipArchive($archiveStream, [System.IO.Compression.ZipArchiveMode]::Create)
 try {
     foreach ($file in $files) {
-        [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, (Join-Path $source $file), $file) | Out-Null
+        $entry = $zip.CreateEntry($file, [System.IO.Compression.CompressionLevel]::Optimal)
+        $entry.LastWriteTime = [DateTimeOffset]::new(2000, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+        $inputStream = [System.IO.File]::OpenRead((Join-Path $source $file))
+        $entryStream = $entry.Open()
+        try { $inputStream.CopyTo($entryStream) }
+        finally { $entryStream.Dispose(); $inputStream.Dispose() }
     }
 } finally {
     $zip.Dispose()

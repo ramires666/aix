@@ -5,6 +5,7 @@ const net = require('node:net');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createClient } = require('./mcp-client.js');
+const versions=require('./package.json').webcodexRelease;
 
 const enabled = process.env.WEBCODEX_BRIDGE_REAL_TEST === '1';
 const gatePath = process.env.WEBCODEX_TEST_GATE_PATH || path.resolve(__dirname, '..', 'bin', 'ai-studio-bridge', 'webcodex-gate.exe');
@@ -89,8 +90,8 @@ test('compiled Gate and agent complete real bridge file operations and reconnect
     assert.match(agent.output, /connected to Gate; agent version=\S+ gate version=\S+/);
     assert.match(gate.output, /webcodex-gate version=\S+/);
     assert.match(gate.output, /agent stream connected .*agent_version=\S+ gate_version=\S+/);
-    assert.match(agent.output, /agent version=1\.5\.0-ai-studio-alpha\.6 gate version=1\.5\.0-ai-studio-alpha\.5/);
-    assert.match(gate.output, /agent_version=1\.5\.0-ai-studio-alpha\.6 gate_version=1\.5\.0-ai-studio-alpha\.5/);
+    assert.ok(agent.output.includes('agent version='+versions.agent+' gate version='+versions.gate));
+    assert.ok(gate.output.includes('agent_version='+versions.agent+' gate_version='+versions.gate));
 
     phase = 'authorize extension bridge';
     const accessToken = await authorizeBridge(oauthClientId, extensionId);

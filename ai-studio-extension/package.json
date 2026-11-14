@@ -1,9 +1,15 @@
 {
   "name": "helper-ai-studio-bridge",
   "private": true,
-  "version": "0.3.13",
+  "version": "0.4.0",
+  "webcodexRelease": {
+    "agent": "1.5.0-ai-studio-alpha.7",
+    "gate": "1.5.0-ai-studio-alpha.5",
+    "replyProtocols": [1, 2]
+  },
   "scripts": {
     "build:vendor": "node build-vendor.cjs",
+    "sync:version": "node sync-version.cjs",
     "test": "node --test *.test.cjs"
   },
   "dependencies": {

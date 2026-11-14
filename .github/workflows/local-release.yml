@@ -1,0 +1,23 @@
+name: Local release checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  local-release-required:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.25.6'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24.11.1'
+          package-manager-cache: false
+      - name: Verify compiled local bundle and existing Gate compatibility
+        shell: pwsh
+        run: ./ai-studio-extension/verify-release.ps1
