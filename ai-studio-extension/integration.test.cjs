@@ -223,6 +223,33 @@ test('a reload before posting retains cached files and waits for explicit delive
   assert.equal(descriptor.data,undefined);assert.equal(h.localData[descriptor.artifactKey],'ZmlsZQ==');
 });
 
+test('resuming paused files rearms the page and checks delivery before another transfer',async()=>{
+  for(const pausedPhase of ['result_ready','attaching_files']){
+    for(const delivered of [false,true]){
+      const initial=saved('paused');
+      Object.assign(initial.session,{paused:true,userPaused:true,pausedPhase,reasonCode:'user_pause',automatic:true,
+        operationId:'op-file',operationKey:'file-key',nextTurn:'next',pendingCall:{name:'read_file',arguments:{path:'W:/file.txt'}},
+        resultText:JSON.stringify({type:'helper-result',operation_id:'op-file',name:'read_file',result:{attachment:{name:'file.txt'}}}),
+        attachments:[{id:'file',name:'file.txt',data:'ZmlsZQ==',encodedLength:8,size:4,mimeType:'text/plain'}]});
+      const h=harness(initial,{snapshotDelivered:delivered},{bridgeAuto:{enabled:false,consent:true,agentId:'agent-1',toolNames:['read_file'],automatic:true}});
+      await h.status();
+      const resumed=await h.message({type:'bridge.resume'},h.panel);
+      assert.equal(resumed.ok,true,resumed.error);
+      const state=(await h.status()).state.session;
+      assert.equal(state.phase,delivered?'waiting_model':'result_ready');
+      assert.equal(state.paused,false);
+      assert.deepEqual(h.pageMessages.filter(message=>['studio.arm','studio.snapshot'].includes(message.type)).map(message=>message.type),['studio.arm','studio.snapshot']);
+      assert.equal(h.createCount,0);
+      assert.equal(h.deliveryCount,0);
+      if(!delivered){
+        assert.equal(state.operationId,'op-file');
+        assert.equal(state.attachments.length,1);
+        assert.match(state.notice,/Передать результат/);
+      }
+    }
+  }
+});
+
 test('file delivery is chunked, private to its operation and completes without a second agent read',async()=>{
   const bytes=Buffer.from('file data Привет\n'.repeat(10000)),data=bytes.toString('base64'),sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');
   const initial=saved();initial.session.automatic=true;

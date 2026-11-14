@@ -255,7 +255,8 @@ async function command(m) {
       if(state.autoSettings?.consent===false)throw Error('Grant consent before resuming');
       {
         const oldSizeResult=state.session.reasonCode==='legacy_size_limit'&&!!state.session.resultText&&!!state.session.nextTurn&&!!state.session.operationId;
-        if(oldSizeResult){
+        const pausedFiles=state.session.paused&&['result_ready','attaching_files'].includes(state.session.pausedPhase)&&!!state.session.attachments?.length&&!!state.session.resultText&&!!state.session.nextTurn&&!!state.session.operationId;
+        if(oldSizeResult||pausedFiles){
           state.session.userPaused=false;
           const restored=await reattachDelivery({tab:{id:state.session.tabId}},{pageInstance:state.session.pageInstance});
           if(!restored.accepted)throw Error(state.session.error);
@@ -396,7 +397,7 @@ function recoverableDelivery(s){
 }
 async function reattachDelivery(sender,m){
   const s=state.session;
-  const unsentFiles=(s.phase==='result_ready'||s.phase==='attaching_files')&&!!s.attachments?.length;
+  const unsentFiles=(['result_ready','attaching_files'].includes(s.phase)||s.paused&&['result_ready','attaching_files'].includes(s.pausedPhase))&&!!s.attachments?.length;
   const unsentSizeResult=s.phase==='paused'&&!s.userPaused&&!s.resumeBlocked&&s.reasonCode==='legacy_size_limit';
   const retainUnsent=()=>{s.phase='paused';s.paused=true;s.resumeBlocked=false;s.reasonCode='legacy_size_limit';s.error='Result exceeds 32 KiB; reduce the tool output before delivery.';};
   try{
