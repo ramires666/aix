@@ -62,7 +62,8 @@
     const normalized = keyboardSuffix ? value.replace(/\s*keyboard_return\s*$/i, '').replace(/\s*\(?\s*(?:ctrl|control)(?:\s*\+\s*enter)?\s*\)?$/i, '').trim() : value;
     return words.includes(normalized);
   });
-  const submitButtons = () => controls().filter((el) => hasLabel(el, ['run', 'send', 'запустить', 'отправить'], true));
+  const isSubmitControl = el => !!el && hasLabel(el, ['run', 'send', 'запустить', 'отправить'], true);
+  const submitButtons = () => controls().filter(isSubmitControl);
   const submitButton = () => {
     const matches = submitButtons();
     return matches.length === 1 ? matches[0] : null;
@@ -562,5 +563,5 @@
     model.appendChild(note);
     return count;
   };
-  return { inspect, stage, submit, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, cleanup, restoreCleanup, annotateContext };
+  return { inspect, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, cleanup, restoreCleanup, annotateContext };
 });

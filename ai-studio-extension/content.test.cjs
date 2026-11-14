@@ -4,6 +4,8 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const WebCodexProtocol = require('./protocol.js');
+const submitControls = require('./studio-adapter.js')({},{});
+const { Node } = require('./test-fixtures/studio-dom.cjs');
 const unwrapResult = text => {
   const match = /^```helper-result\n([\s\S]*)\n```$/.exec(text);
   return match ? match[1] : text;
@@ -49,10 +51,16 @@ test('a result sent with native Run is confirmed without another upload or submi
 function harness({manualClock=false}={}) {
   const listeners = {}, sent = [], timers = new Map(), state = { supported: true, generating: false, editorEmpty: true, conversationKey: 'active-chat', latestModel: { text: 'old answer' }, latestUser: null };
   let timerId = 0, now=10000, submitted = [], staged = [], observerCallback, accepted = true, sendHandler, disconnected = false, cleared = false, submitHandler, uploadHandler;
-  const uploaded=[];
+  const uploaded=[],preparedMarkers=[];
   class TestDate extends Date {static now(){return now;}}
   const adapter = {
     inspect: () => ({ ...state, latestModel: state.latestModel && { ...state.latestModel }, latestUser: state.latestUser && { ...state.latestUser } }),
+    isSubmitControl:button=>{
+      if(!button)return false;
+      const control=new Node('button',{'aria-label':button.getAttribute?.('aria-label')||''},button.innerText||button.textContent||'');
+      return submitControls.isSubmitControl(control);
+    },
+    prepareSessionMessage:marker=>{preparedMarkers.push(marker);return true;},
     ownsDraft:value=>staged[staged.length-1]===value,
     attachFiles:async(files,options)=>{uploaded.push(files);return uploadHandler?uploadHandler(files,options):{ok:options.isCurrent()};},
     releaseFiles(){},
@@ -84,8 +92,17 @@ function harness({manualClock=false}={}) {
     }
     throw Error('timers did not settle');
   };
-  return { state, sent, staged, submitted, uploaded, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: () => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:'Run\nkeyboard_return',textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
+  return { state, sent, staged, submitted, uploaded, preparedMarkers, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
 }
+
+test('current Run keyboard labels prepare the chat marker before the first request',async()=>{
+  for(const label of ['Run Ctrl','Run\nCtrl','Run Control','Run (Ctrl+Enter)','Run Ctrl\nkeyboard_return']){
+    const h=harness(),marker='a'.repeat(32);
+    await h.send({type:'studio.arm',sessionId:'s1',turnless:true,sessionMarker:marker});
+    h.run(label);
+    assert.deepEqual(h.preparedMarkers,[marker],label);
+  }
+});
 
 test('delivery waits for async Run readiness and aborts after disarm', async () => {
   const h = harness();await h.send({type:'studio.arm',sessionId:'s1'});

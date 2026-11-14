@@ -11,6 +11,7 @@ test('a completed answer with the current Run Ctrl label is no longer generating
     assert.equal(snapshot.supported,true,runText);
     assert.equal(snapshot.generating,false,runText);
     assert.equal(snapshot.controlsPending,false,runText);
+    assert.equal(state.adapter.isSubmitControl(state.run),true,runText);
   }
 });
 

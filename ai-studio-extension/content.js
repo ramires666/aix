@@ -136,11 +136,11 @@
     const copy=button?.cloneNode?.(true);
     if(copy)for(const icon of copy.querySelectorAll('[aria-hidden="true"], .material-symbols-outlined, .material-icons, mat-icon, svg'))icon.remove();
     const labels=[button?.getAttribute('aria-label'),button?.getAttribute('title'),button?.innerText,button?.textContent,copy?.innerText||copy?.textContent]
-      .map(value=>String(value||'').trim().toLowerCase().replace(/\s*keyboard_return\s*$/i,'').replace(/\s*\(?\s*(?:ctrl|control)\s*\+\s*enter\s*\)?$/i,'').trim());
+      .map(value=>String(value||'').trim().toLowerCase());
     const label=labels.join(' ');
     if(labels.some(value=>/^(new chat|new prompt|create (?:a )?new (?:chat|prompt)|новый чат|новый запрос)$/.test(value)))newChatPending=true;
     else {const navigation=chatLinkKind(event);if(navigation==='new')newChatPending=true;else if(navigation==='saved')requestInstructionCheck();}
-    if(turnless&&labels.some(value=>/^(run|send|запустить|отправить)$/.test(value))){if(sessionId&&sessionMarker&&!checkInstructions&&!systemStagePending)adapter.prepareSessionMessage?.(sessionMarker);expectResponse();}
+    if(turnless&&adapter.isSubmitControl(button)){if(sessionId&&sessionMarker&&!checkInstructions&&!systemStagePending)adapter.prepareSessionMessage?.(sessionMarker);expectResponse();}
     if(adapter.inspect().generating&&(/\b(stop|cancel)\b|остановить|отмена/.test(label)||button?.querySelector?.('.stoppable-spinner, ms-stoppable-spinner')))stopping=true;
   },true);
   window.addEventListener?.('popstate',requestInstructionCheck);
