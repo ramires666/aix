@@ -5,14 +5,14 @@ const fs=require('node:fs');
 const path=require('node:path');
 const WebCodexProtocol=require('./protocol.js');
 
-function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=false,oauthSuccess=false,bridgeAuto,operations={}}={}){
-  const listeners={},sessionStore={},localStore={bridgeAutoSetupV1:true,...(bridgeAuto?{bridgeAuto}:{}),...(gateAuth?{bridgeAuth:{gateUrl:'https://gate.example',clientId:'id',accessToken:'token'}}:{})},calls={local:0,gate:0};let disconnectLocal=false;
+function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=false,oauthSuccess=false,bridgeAuto,operations={},storage={}}={}){
+  const listeners={},sessionStore={},localStore={bridgeAutoSetupV1:true,...(bridgeAuto?{bridgeAuto}:{}),...(gateAuth?{bridgeAuth:{gateUrl:'https://gate.example',clientId:'id',accessToken:'token'}}:{}),...structuredClone(storage)},calls={local:0,gate:0};let disconnectLocal=false;
   const event=fn=>({addListener:fn});
-  const chrome={runtime:{getURL:p=>'chrome-extension://test/'+p,onMessage:event(fn=>listeners.message=fn)},storage:{session:{setAccessLevel:async()=>{},get:async k=>({[k]:sessionStore[k]}),set:async x=>Object.assign(sessionStore,x)},local:{setAccessLevel:async()=>{},get:async k=>({[k]:localStore[k]}),set:async x=>Object.assign(localStore,x),remove:async k=>delete localStore[k]}},action:{onClicked:event(()=>{})},sidePanel:{open:async()=>{}},alarms:{create(){},onAlarm:event(fn=>listeners.alarm=fn)},permissions:{contains:async()=>true},tabs:{get:async()=>({url:'https://aistudio.google.com/app/prompts/a'}),sendMessage:async()=>({supported:true,ok:true,conversationKey:'chat'})},identity:{getRedirectURL:()=> 'https://extension.test/callback',launchWebAuthFlow:async({url})=>{if(!oauthSuccess)throw Error('OAuth cancelled');const auth=new URL(url);return 'https://extension.test/callback?state='+auth.searchParams.get('state')+'&iss='+encodeURIComponent(auth.origin)+'&code=code'}}};
+  const chrome={runtime:{getURL:p=>'chrome-extension://test/'+p,onMessage:event(fn=>listeners.message=fn)},storage:{session:{setAccessLevel:async()=>{},get:async k=>({[k]:structuredClone(sessionStore[k])}),set:async x=>Object.assign(sessionStore,structuredClone(x))},local:{setAccessLevel:async()=>{},get:async k=>({[k]:structuredClone(localStore[k])}),set:async x=>Object.assign(localStore,structuredClone(x)),remove:async k=>delete localStore[k]}},action:{onClicked:event(()=>{})},sidePanel:{open:async()=>{}},alarms:{create(){},onAlarm:event(fn=>listeners.alarm=fn)},permissions:{contains:async()=>true},tabs:{get:async()=>({url:'https://aistudio.google.com/app/prompts/a'}),sendMessage:async()=>({supported:true,ok:true,conversationKey:'chat'})},identity:{getRedirectURL:()=> 'https://extension.test/callback',launchWebAuthFlow:async({url})=>{if(!oauthSuccess)throw Error('OAuth cancelled');const auth=new URL(url);return 'https://extension.test/callback?state='+auth.searchParams.get('state')+'&iss='+encodeURIComponent(auth.origin)+'&code=code'}}};
   if(session)sessionStore.webcodexState={connected:false,gateUrl:'',clientId:'',agents:[],tools:[],session:{phase:'idle',transport:'',agentId:'',toolNames:[],automatic:false,paused:false,turn:'',instructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:null},...session};
   const native={createClient:()=>({endpoint:'http://127.0.0.1:47831',agentIdentity:'agent-one',initialize:async()=>{calls.local++;if(!localAvailable)throw Error('native host unavailable');return{}},listTools:async()=>{if(disconnectLocal){const e=Error('native disconnected');e.code='NATIVE_DISCONNECTED';throw e;}return[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}}]},listAgents:async()=>[{id:'local',online:true}],createOperation:async()=>({content:[{type:'text',text:'local'}]}),getOperation:async()=>({}),rpc:async()=>({}),close:async()=>{}})};
   const makeLocal = native.createClient;
-  native.createClient = () => ({...makeLocal(),
+  native.createClient = operations.clientFactory || (() => ({...makeLocal(),
     getOperationByKey: operations.unsupported ? undefined : async key => {
       calls.lookups = (calls.lookups || 0) + 1;
       assert.equal(key, 'saved-key');
@@ -24,7 +24,7 @@ function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=fal
       assert.equal(request.key, 'saved-key');
       return {operation_id:'saved-id',status:'completed',result:{content:[{type:'text',text:'saved result'}]}};
     }
-  });
+  }));
   const gate={createClient:()=>({initialize:async()=>{calls.gate++;if(!gateAvailable)throw Error('gate offline');return{}},listTools:async()=>[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}}],listAgents:async()=>[{id:'remote',online:true}],createOperation:async()=>{calls.gate++;return{content:[{type:'text',text:'gate'}]}},getOperation:async()=>({}),rpc:async()=>({})})};
   const context={chrome,crypto:require('node:crypto').webcrypto,URL,URLSearchParams,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,JSON,Promise,Set,Map,Date,AbortSignal,AbortController,Math,Error,String,Object,Number,RegExp,console,btoa:s=>Buffer.from(s,'binary').toString('base64'),fetch:async()=>({ok:true,text:async()=>JSON.stringify({access_token:'new-token'})}),WebCodexProtocol, WebCodexSession:require('./session-state.js'), WebCodexAttachments:require('./attachments.js'),WebCodexMCP:gate,WebCodexLocal:native,importScripts(){},setTimeout,clearTimeout};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'background.js'),'utf8'),context,{filename:'background.js'});
@@ -86,6 +86,81 @@ test('pause during a missing-key lookup cancels creation before the queued pause
   await recovering;await pausing;
   const s=(await message(h,{type:'bridge.status'})).state.session;
   assert.equal(h.calls.creates||0,0);assert.equal(h.calls.gate,0);assert.equal(s.paused,true);assert.equal(s.operationKey,'saved-key');
+});
+
+async function directSequence(fault,noise){
+  const endpoint='http://127.0.0.1:47831',agentIdentity='sequence-agent',marker='0123456789abcdef0123456789abcdef';
+  const records=new Map(),requests=[],deliveries=[];
+  let effects=0,failed=false,h;
+  const tools=[{name:'write_file',inputSchema:{type:'object',properties:{path:{type:'string'},content:{type:'string'},if_absent:{const:true}},required:['path','content','if_absent'],additionalProperties:false}}];
+  const clientFactory=options=>require('./local-client.js').createClient({...options,fetchImpl:async(url,request)=>{
+    assert.equal(url,endpoint+'/studio/rpc');
+    const rpc=JSON.parse(request.body);requests.push(rpc);
+    let result;
+    if(rpc.method==='initialize')result={localAgent:{id:agentIdentity},studioOperations:{lookupByKey:true}};
+    else if(rpc.method==='tools/list')result={tools};
+    else if(rpc.method==='tools/call')result={structuredContent:{agents:[{id:'local',online:true}]}};
+    else if(rpc.method==='operations/lookup')result=records.get(rpc.params.key)||{status:'not_found'};
+    else if(rpc.method==='operations/get')result=[...records.values()].find(record=>record.operation_id===rpc.params.id);
+    else if(rpc.method==='operations/create'){
+      const {key,arguments:args}=rpc.params;
+      assert.equal(args.content,'Привет 😀\r\n"quotes" \\path\n');
+      if(!failed&&fault==='before_accept'){failed=true;throw new TypeError('request lost before acceptance');}
+      result=records.get(key);
+      if(!result){
+        effects++;
+        result={operation_id:'op-'+key,status:fault==='unknown'?'outcome_unknown':'completed',result:{content:[{type:'text',text:'written'}]}};
+        records.set(key,result);
+      }
+      if(!failed&&['after_effect','unknown'].includes(fault)){failed=true;throw new TypeError('response lost before ID');}
+    }else throw Error('unexpected local method '+rpc.method);
+    return new Response(JSON.stringify({id:rpc.id,result}));
+  }});
+  const initial={session:{phase:'waiting_model',transport:'local',localEndpoint:endpoint,localAgentIdentity:agentIdentity,agentId:'local',toolNames:['write_file'],sessionId:'sequence',tabId:1,turnless:true,sessionMarker:marker,turn:'turn',automatic:false,autoApprove:true,paused:false,count:0}};
+  function start(storage){
+    h=harness({session:initial,storage,operations:{clientFactory},bridgeAuto:{enabled:true,consent:true,autoApprove:true,automatic:false,agentId:'local',toolNames:['write_file']}});
+    h.chrome.tabs.sendMessage=async(_id,message)=>{deliveries.push(message);return{supported:true,ok:true,delivered:false};};
+  }
+  start();await message(h,{type:'bridge.status'});
+  const page={url:'https://aistudio.google.com/app/prompts/a',frameId:0,tab:{id:1}};
+  const call={type:'studio.call',sessionId:'sequence',responseKey:'answer-one',text:'HELPER_'+marker+' write_file\r\npath: W:/test.txt\r\nif_absent: true\r\n---\r\nПривет 😀\r\n"quotes" \\path\n\r\nEND_'+marker,generating:false};
+  await new Promise(resolve=>h.listeners.message(call,page,resolve));
+  const key=(await message(h,{type:'bridge.status'})).state.session.operationKey;
+  for(const event of noise){
+    if(event==='restart'){start(h.localStore);await message(h,{type:'bridge.status'});}
+    else if(event==='poll')await recoverOnce(h);
+    else if(event==='pause')await message(h,{type:'bridge.pause'});
+    else if(event==='resume')await message(h,{type:'bridge.resume'});
+    else if(event==='duplicate')await new Promise(resolve=>h.listeners.message(call,page,resolve));
+    assert.ok(effects<=1,'duplicate side effect');
+    const s=(await message(h,{type:'bridge.status'})).state.session;
+    assert.equal(s.operationKey,key);assert.equal(s.transport,'local');assert.equal(h.calls.gate,0);
+  }
+  if(fault!=='unknown')await message(h,{type:'bridge.resume'});
+  await recoverOnce(h);
+  const s=(await message(h,{type:'bridge.status'})).state.session;
+  assert.equal(effects,1);assert.equal(s.phase,fault==='unknown'?'paused':'result_ready');
+  if(fault==='unknown')assert.equal(s.reasonCode,'outcome_unknown');
+  else assert.match(s.resultText,/written/);
+  assert.equal(deliveries.filter(message=>message.type==='studio.deliver').length,0);
+  assert.equal(requests.filter(request=>request.method==='operations/create').length,fault==='before_accept'?2:1);
+}
+
+test('seeded direct-route failures preserve one effect through restarts, duplicates and pauses',async()=>{
+  const events=['restart','poll','pause','resume','duplicate'];
+  for(const fault of ['before_accept','after_effect','unknown'])for(let seed=1;seed<=12;seed++){
+    let random=seed;
+    const noise=Array.from({length:8},()=>{random=(Math.imul(random,1664525)+1013904223)>>>0;return events[random%events.length];});
+    try{await directSequence(fault,noise);}
+    catch(error){
+      let reduced=[...noise];
+      for(let i=0;i<reduced.length;){
+        const candidate=reduced.filter((_,index)=>index!==i);
+        try{await directSequence(fault,candidate);i++;}catch{reduced=candidate;i=0;}
+      }
+      throw Error('seed='+seed+' fault='+fault+' reduced='+JSON.stringify(reduced),{cause:error});
+    }
+  }
 });
 
 test('restores local transport before saved Gate credentials and preserves local agent selection',async()=>{

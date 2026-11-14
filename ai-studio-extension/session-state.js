@@ -53,7 +53,7 @@
         break;
       case 'pause':
         if(session.phase!=='paused')next.pausedPhase=session.phase;
-        next.paused=true;next.phase='paused';next.reasonCode=event.reason;
+        next.paused=true;next.phase='paused';next.reasonCode=['outcome_unknown','operation_expired'].includes(session.reasonCode)?session.reasonCode:event.reason;
         next.userPaused=event.reason==='user_pause'||event.reason==='user_stop';
         break;
       case 'resume':

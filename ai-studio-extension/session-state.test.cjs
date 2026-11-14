@@ -46,3 +46,12 @@ test('pausing preserves execution and a confirmed result while preventing new ef
   next=transition(next,{type:'delivery_confirmed',operationId:'op'}).session;
   assert.equal(next.phase,'paused');assert.equal(next.pausedPhase,'waiting_model');assert.equal(next.pendingCall,null);
 });
+
+test('manual pause preserves an unresolved unknown or expired operation',()=>{
+  for(const reasonCode of ['outcome_unknown','operation_expired']){
+    const session={sessionId:'chat',phase:'paused',paused:true,resumeBlocked:true,reasonCode,operationKey:'saved-key',pendingCall:{name:'write_file'}};
+    const next=transition(session,{type:'pause',reason:'user_pause'}).session;
+    assert.equal(next.reasonCode,reasonCode);assert.equal(next.operationKey,'saved-key');
+    assert.equal(transition(next,{type:'resume',consent:true}).accepted,false);
+  }
+});
