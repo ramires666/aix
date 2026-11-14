@@ -219,7 +219,8 @@ test('a reload before posting retains cached files and waits for explicit delive
   const response=await h.message({type:'studio.hello',pageInstance:'new-page',hasHistory:true,supported:true,editorEmpty:true},h.page);
   assert.equal(response.accepted,true);assert.equal(h.createCount,0);assert.equal(h.deliveryCount,0);
   const state=(await h.status()).state.session;assert.equal(state.phase,'result_ready');assert.equal(state.attachments.length,1);assert.match(state.notice,/Передать результат/);
-  assert.equal(h.db[KEY].session.attachments[0].data,'ZmlsZQ==');
+  const descriptor=h.db[KEY].session.attachments[0];
+  assert.equal(descriptor.data,undefined);assert.equal(h.localData[descriptor.artifactKey],'ZmlsZQ==');
 });
 
 test('file delivery is chunked, private to its operation and completes without a second agent read',async()=>{
@@ -237,6 +238,24 @@ test('file delivery is chunked, private to its operation and completes without a
   await h.message({type:'studio.deliveryComplete',sessionId:'session-1',operationId:'op-1',confirmed:true,attempted:true},h.page);
   await h.alarm();assert.equal(h.createCount,1);assert.equal((await h.status()).state.session.phase,'waiting_model');
   assert.deepEqual((await h.status()).state.session.attachments,[]);
+});
+
+test('worker restart restores an artifact reference and serves the saved bytes without reading the agent',async()=>{
+  const bytes=Buffer.from('Сохранённый файл 😀\r\n'.repeat(200000)),sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+  const initial=saved('result_ready');Object.assign(initial.session,{operationId:'op-file',operationKey:'key',attachments:[{id:sha256,name:'file.txt',mimeType:'text/plain',size:bytes.length,sha256,data:bytes.toString('base64')}]});
+  const auto={bridgeAuto:{consent:true,enabled:true,toolNames:['read_file']}};
+  const first=harness(initial,{},auto);await first.status();
+  const durable=first.localData.webcodexDurableState;
+  assert.equal(durable.version,2);assert.ok(JSON.stringify(durable).length<5000);assert.equal(durable.state.session.attachments[0].data,undefined);
+  const restarted=harness(saved('idle'),{},first.localData);await restarted.status();
+  let offset=0,received='';
+  const encodedLength=initial.session.attachments[0].data.length;
+  while(offset<encodedLength){
+    const response=await restarted.message({type:'studio.fileChunk',sessionId:'session-1',operationId:'op-file',attachmentId:sha256,offset},restarted.page);
+    assert.equal(response.accepted,true,response.error);received+=response.fileChunk.data;offset=response.fileChunk.nextOffset;
+  }
+  assert.deepEqual(Buffer.from(received,'base64'),bytes);assert.equal(restarted.createCount,0);
+  assert.equal((await restarted.status()).state.session.phase,'result_ready');
 });
 
 test('explicit uncertain validation feedback is checked without a resend or any agent operation',async()=>{

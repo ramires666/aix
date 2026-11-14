@@ -13,7 +13,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 )
+
+var fileMutationMu sync.Mutex
 
 func (e *nativeExecutor) readFile(args map[string]any) (any, error) {
 	if err := onlyArgs(args, "path", "offset", "limit", "delivery"); err != nil {
@@ -83,6 +86,8 @@ func (e *nativeExecutor) readFile(args map[string]any) (any, error) {
 }
 
 func (e *nativeExecutor) writeFile(args map[string]any, requirePrecondition bool) (any, error) {
+	fileMutationMu.Lock()
+	defer fileMutationMu.Unlock()
 	allowed := []string{"path", "content"}
 	if requirePrecondition {
 		allowed = append(allowed, "if_absent", "expected_sha256")
@@ -103,12 +108,13 @@ func (e *nativeExecutor) writeFile(args map[string]any, requirePrecondition bool
 		return nil, toolErr("invalid_arguments", "content must be a string")
 	}
 	createOnly := false
+	expected := ""
 	if requirePrecondition {
 		ifAbsent, hasIfAbsent, err := optionalBool(args, "if_absent")
 		if err != nil {
 			return nil, err
 		}
-		expected, err := optionalString(args, "expected_sha256")
+		expected, err = optionalString(args, "expected_sha256")
 		if err != nil {
 			return nil, err
 		}
@@ -137,9 +143,12 @@ func (e *nativeExecutor) writeFile(args map[string]any, requirePrecondition bool
 	if createOnly {
 		err = atomicCreate(path, data)
 	} else {
-		err = atomicWrite(path, data, true)
+		err = atomicWrite(path, data, true, expected)
 	}
 	if err != nil {
+		return nil, err
+	}
+	if err := verifyWrittenFile(path, data); err != nil {
 		return nil, err
 	}
 	if errors.Is(parentErr, os.ErrNotExist) {
@@ -154,6 +163,8 @@ func (e *nativeExecutor) writeFile(args map[string]any, requirePrecondition bool
 }
 
 func (e *nativeExecutor) editFile(args map[string]any) (any, error) {
+	fileMutationMu.Lock()
+	defer fileMutationMu.Unlock()
 	if err := onlyArgs(args, "path", "expected_sha256", "edits"); err != nil {
 		return nil, err
 	}
@@ -225,7 +236,10 @@ func (e *nativeExecutor) editFile(args map[string]any) (any, error) {
 		}
 	}
 	newData := []byte(content)
-	if err := atomicWrite(path, newData, false); err != nil {
+	if err := atomicWrite(path, newData, false, expected); err != nil {
+		return nil, err
+	}
+	if err := verifyWrittenFile(path, newData); err != nil {
 		return nil, err
 	}
 	e.logFileChange(path, data, newData, false)
@@ -508,6 +522,8 @@ func (e *nativeExecutor) findFiles(ctx context.Context, args map[string]any) (an
 }
 
 func (e *nativeExecutor) movePath(args map[string]any) (any, error) {
+	fileMutationMu.Lock()
+	defer fileMutationMu.Unlock()
 	if err := onlyArgs(args, "source", "destination", "expected_sha256"); err != nil {
 		return nil, err
 	}
@@ -573,6 +589,8 @@ func (e *nativeExecutor) movePath(args map[string]any) (any, error) {
 }
 
 func (e *nativeExecutor) deletePath(args map[string]any) (any, error) {
+	fileMutationMu.Lock()
+	defer fileMutationMu.Unlock()
 	if err := onlyArgs(args, "path", "expected_sha256"); err != nil {
 		return nil, err
 	}
@@ -633,7 +651,7 @@ func readRegularFile(path string) ([]byte, os.FileInfo, error) {
 	return data, info, nil
 }
 
-func atomicWrite(path string, data []byte, createParents bool) error {
+func atomicWrite(path string, data []byte, createParents bool, expected ...string) error {
 	if createParents {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return toolErr("io_error", "create parent directory", err)
@@ -654,7 +672,11 @@ func atomicWrite(path string, data []byte, createParents bool) error {
 	if err != nil {
 		return toolErr("io_error", "write temporary file", err)
 	}
-	if err := atomicReplace(temporaryName, path); err != nil {
+	if err := atomicReplace(temporaryName, path, expected...); err != nil {
+		var coded *codedError
+		if errors.As(err, &coded) {
+			return err
+		}
 		return toolErr("io_error", "replace file", err)
 	}
 	return nil
@@ -698,6 +720,13 @@ func requireFileHash(path, expected string) error {
 	}
 	if hashBytes(data) != expected {
 		return toolErr("stale_hash", "expected_sha256 does not match the current file")
+	}
+	return nil
+}
+
+func verifyWrittenFile(path string, data []byte) error {
+	if err := requireFileHash(path, hashBytes(data)); err != nil {
+		return toolErr("outcome_unknown", "file changed or became unreadable before the write could be verified", err)
 	}
 	return nil
 }

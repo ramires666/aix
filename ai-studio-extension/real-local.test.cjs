@@ -47,6 +47,11 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   const op = await client.createOperation(args);
   assert.equal(op.status, 'completed', JSON.stringify(op));
   assert.equal(fs.readFileSync(file, 'utf8'), 'local works\n');
+  const racePath=path.join(root,'race.txt');fs.writeFileSync(racePath,'original');
+  const originalHash=require('node:crypto').createHash('sha256').update('original').digest('hex');
+  const raced=await Promise.all(Array.from({length:12},(_,i)=>client.createOperation({key:'race-'+i,name:'write_file',arguments:{path:racePath,content:'winner '+i,expected_sha256:originalHash},agentId:'local'})));
+  assert.equal(raced.filter(result=>result.status==='completed').length,1);
+  for(const result of raced.filter(result=>result.status!=='completed'))assert.equal(result.result.structuredContent.error.code,'stale_hash');
   let lostCreates=0;
   const lossy=createClient({endpoint,agentIdentity,extensionId:'lgiihodklblifecheadnfjkaokmmfikk',fetchImpl:async(url,request)=>{
     const response=await fetch(url,request);

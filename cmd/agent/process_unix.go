@@ -51,6 +51,11 @@ func processAliveWithIdentity(pid int, identity string) bool {
 	return err == nil && current == identity
 }
 
-func atomicReplace(source, destination string) error {
+func atomicReplace(source, destination string, expected ...string) error {
+	if len(expected) > 0 && expected[0] != "" {
+		if err := requireFileHash(destination, expected[0]); err != nil {
+			return err
+		}
+	}
 	return os.Rename(source, destination)
 }

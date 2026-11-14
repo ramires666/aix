@@ -18,6 +18,7 @@
       if(typeof meta.content!=='string')return{result,attachments:[]};
       bytes=new TextEncoder().encode(meta.content);data=base64(bytes);
       const sha256=await digest(bytes);
+      if((meta.offset||1)===1&&!meta.truncated&&meta.sha256&&(meta.sha256!==sha256||meta.size!==bytes.byteLength))throw Error('File text checksum or size does not match');
       let filename=meta.path.split(/[\\/]/).pop()||'file.txt';
       if(meta.offset>1||meta.truncated)filename+='.lines-'+(meta.offset||1)+'-'+((meta.next_offset||1)-1)+'.txt';
       fileMeta={name:filename,mimeType:'text/plain',size:bytes.byteLength,sha256,uri:'urn:helper:sha256:'+sha256};
@@ -28,7 +29,37 @@
     const compact={...summary,attachment:{name:descriptor.name,mimeType:descriptor.mimeType,size:descriptor.size,sha256:descriptor.sha256}};
     return{result:{isError:false,structuredContent:compact,content:[{type:'text',text:JSON.stringify(compact)}]},attachments:[{...descriptor,data}]};
   }
-  const api={prepare};
+  function createStore(storage){
+    let cached;
+    async function persist(files=[]){
+      const descriptors=[];
+      for(const file of files){
+        if(typeof file.data!=='string'){descriptors.push(file);continue;}
+        const bytes=Uint8Array.from(atob(file.data),char=>char.charCodeAt(0)),sha256=await digest(bytes);
+        if(file.sha256&&file.sha256!==sha256||file.size!==bytes.byteLength)throw Error('Saved file checksum or size does not match');
+        const artifactKey='webcodexArtifact:'+sha256,{data,...metadata}=file;
+        await storage.set({[artifactKey]:data});
+        cached={artifactKey,data,size:bytes.byteLength};
+        descriptors.push({...metadata,sha256,artifactKey,encodedLength:data.length});
+      }
+      return descriptors;
+    }
+    async function chunk(file,offset){
+      if(!file||file.artifactKey!=='webcodexArtifact:'+file.sha256||!Number.isSafeInteger(offset)||offset<0||offset>file.encodedLength||offset%4!==0)throw Error('Invalid file transfer offset or artifact');
+      if(cached?.artifactKey!==file.artifactKey){
+        const data=(await storage.get(file.artifactKey))[file.artifactKey];
+        if(typeof data!=='string')throw Error('Saved file artifact is unavailable');
+        const bytes=Uint8Array.from(atob(data),char=>char.charCodeAt(0));
+        if(data.length!==file.encodedLength||bytes.byteLength!==file.size||await digest(bytes)!==file.sha256)throw Error('Saved file artifact checksum or size does not match');
+        cached={artifactKey:file.artifactKey,data,size:bytes.byteLength};
+      }
+      if(cached.data.length!==file.encodedLength||cached.size!==file.size)throw Error('Saved file artifact length or size does not match');
+      const nextOffset=Math.min(file.encodedLength,offset+65536);
+      return{data:cached.data.slice(offset,nextOffset),nextOffset,eof:nextOffset===file.encodedLength};
+    }
+    return{persist,chunk};
+  }
+  const api={prepare,createStore};
   if(typeof module!=='undefined'&&module.exports)module.exports=api;
   root.WebCodexAttachments=api;
 })(typeof globalThis!=='undefined'?globalThis:this);

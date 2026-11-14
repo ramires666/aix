@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,59 @@ import (
 	"testing"
 	"time"
 )
+
+func TestConcurrentCheckedWritesHaveOneWinner(t *testing.T) {
+	e, root := testExecutor(t)
+	path := filepath.Join(root, "shared.txt")
+	if err := os.WriteFile(path, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outcomes := make(chan error, 20)
+	for i := range 20 {
+		go func() {
+			_, err := e.writeFile(map[string]any{"path": path, "content": fmt.Sprint(i), "expected_sha256": hashBytes([]byte("original"))}, true)
+			outcomes <- err
+		}()
+	}
+	winners := 0
+	for range 20 {
+		err := <-outcomes
+		if err == nil {
+			winners++
+			continue
+		}
+		var coded *codedError
+		if !errors.As(err, &coded) || coded.code != "stale_hash" {
+			t.Errorf("expected stale_hash, got %v", err)
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("successful writers = %d, want 1", winners)
+	}
+}
+
+func TestCheckedPublicationRejectsExternalChangeAfterStaging(t *testing.T) {
+	dir := t.TempDir()
+	path, staged := filepath.Join(dir, "file.txt"), filepath.Join(dir, "staged.txt")
+	if err := os.WriteFile(path, []byte("editor change"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("agent change"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := atomicReplace(staged, path, hashBytes([]byte("original")))
+	var coded *codedError
+	if !errors.As(err, &coded) || coded.code != "stale_hash" {
+		t.Fatalf("publication conflict: %v", err)
+	}
+	if data, _ := os.ReadFile(path); string(data) != "editor change" {
+		t.Fatal("external editor change was overwritten")
+	}
+	err = verifyWrittenFile(path, []byte("agent change"))
+	if !errors.As(err, &coded) || coded.code != "outcome_unknown" {
+		t.Fatalf("post-write verification: %v", err)
+	}
+}
 
 func callToolV4(t *testing.T, executor *nativeExecutor, name string, arguments map[string]any) map[string]any {
 	t.Helper()

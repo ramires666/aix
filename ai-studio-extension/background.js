@@ -5,11 +5,13 @@ let token = '', client = null, localClient = null, gateClient = null, serial = P
 let restoreError='',authorizationRevision=0,approvalRevision=0,automaticRevision=0,interruptWrites=Promise.resolve();
 const uuid = () => crypto.randomUUID();
 const coordinatorId=uuid();
+const artifactStore=WebCodexAttachments.createStore(chrome.storage.local);
 const clone = x => JSON.parse(JSON.stringify(x));
 function publicState() { const s=clone({...state,session:{...state.session,attachments:state.session.attachments?.map(({data,...metadata})=>metadata)}}); delete s.accessToken; s.connecting=connecting; return s; }
 async function save() {
   if(restoreError)throw Error(restoreError);
-  await chrome.storage.local.set({[DURABLE_KEY]:{version:1,coordinatorId,state}});
+  if(state.session.attachments?.some(file=>typeof file.data==='string'))state.session.attachments=await artifactStore.persist(state.session.attachments);
+  await chrome.storage.local.set({[DURABLE_KEY]:{version:2,coordinatorId,state}});
   try {await chrome.storage.session.set({[KEY]:state});await chrome.storage.local.remove?.(LARGE_KEY);}
   catch(error){
     if(!/quota|QUOTA_BYTES|size/i.test(String(error.message||error)))throw error;
@@ -64,7 +66,7 @@ async function restore() {
     const data=await chrome.storage.session.get(KEY);
     const durable=(await chrome.storage.local.get(DURABLE_KEY))[DURABLE_KEY];
     if(durable){
-      if(durable.version!==1||!durable.state?.session){restoreError='Saved state version is unsupported or damaged; restore compatible extension code';throw Error(restoreError);}
+      if(![1,2].includes(durable.version)||!durable.state?.session){restoreError='Saved state version is unsupported or damaged; restore compatible extension code';throw Error(restoreError);}
       state=durable.state;
     }
     else if(data[KEY]?.durableState)throw Error('Saved durable operation state is unavailable');
@@ -466,9 +468,7 @@ async function studioMessage(m,sender) {
   if(m.type==='studio.fileChunk'){
     if(!state.autoSettings?.consent||s.paused||s.phase==='stopped'||m.operationId!==(s.operationId||s.operationKey)||!s.toolNames?.includes('read_file'))throw Error('File transfer is not authorized for this operation');
     const file=s.attachments?.find(file=>file.id===m.attachmentId);
-    if(!file||!Number.isSafeInteger(m.offset)||m.offset<0||m.offset>file.data.length||m.offset%4!==0)throw Error('Invalid file transfer offset');
-    const next=Math.min(file.data.length,m.offset+65536);
-    return{accepted:true,fileChunk:{data:file.data.slice(m.offset,next),nextOffset:next,eof:next===file.data.length}};
+    return{accepted:true,fileChunk:await artifactStore.chunk(file,m.offset)};
   }
   if(m.type==='studio.deliveryStarted'){
     if(s.paused||!state.autoSettings?.consent||s.phase!=='attaching_files'||m.operationId!==(s.operationId||s.operationKey))return{accepted:false};

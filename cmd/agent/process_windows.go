@@ -56,7 +56,7 @@ func processAliveWithIdentity(pid int, identity string) bool {
 	return windows.GetExitCodeProcess(handle, &exitCode) == nil && exitCode == 259
 }
 
-func atomicReplace(source, destination string) error {
+func atomicReplace(source, destination string, expected ...string) error {
 	from, err := windows.UTF16PtrFromString(source)
 	if err != nil {
 		return err
@@ -66,6 +66,11 @@ func atomicReplace(source, destination string) error {
 		return err
 	}
 	for attempt := 0; ; attempt++ {
+		if len(expected) > 0 && expected[0] != "" {
+			if err := requireFileHash(destination, expected[0]); err != nil {
+				return err
+			}
+		}
 		err = windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 		if attempt == 6 || !errors.Is(err, windows.ERROR_ACCESS_DENIED) && !errors.Is(err, windows.ERROR_SHARING_VIOLATION) {
 			return err

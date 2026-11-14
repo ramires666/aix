@@ -434,6 +434,11 @@ func (h *studioOperations) create(ctx context.Context, e *nativeExecutor, key, n
 	} else {
 		if result, ok := value.(map[string]any); ok && result["isError"] == true {
 			op.Status = "failed"
+			structured, _ := result["structuredContent"].(map[string]any)
+			failure, _ := structured["error"].(map[string]any)
+			if failure["code"] == "outcome_unknown" {
+				op.Status = "outcome_unknown"
+			}
 		} else {
 			op.Status = "completed"
 		}
