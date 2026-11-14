@@ -251,14 +251,16 @@ async function command(m) {
     }
     case 'bridge.pause': await chrome.tabs.sendMessage(state.session.tabId,{type:'studio.cancelDelivery',sessionId:state.session.sessionId}).catch(()=>{});await disableAuto();if(state.session.phase!=='paused')state.session.pausedPhase=state.session.phase;if(state.session.phase==='delivery_uncertain'||state.session.resumeBlocked)state.session.resumeBlocked=true;state.session.paused=true;state.session.userPaused=true;state.session.phase='paused';break;
     case 'bridge.resume':
-      if(state.session.phase==='stopped'||state.session.resumeBlocked||state.session.phase==='delivery_uncertain'||state.session.pausedPhase==='delivery_uncertain'||state.session.reasonCode==='outcome_unknown')throw Error('Resolve the uncertain operation or re-arm this chat before resuming');
+      if(state.session.phase==='stopped'||state.session.resumeBlocked||state.session.reasonCode==='outcome_unknown')throw Error('Resolve the uncertain operation or re-arm this chat before resuming');
       if(state.autoSettings?.consent===false)throw Error('Grant consent before resuming');
       {
         const oldSizeResult=state.session.reasonCode==='legacy_size_limit'&&!!state.session.resultText&&!!state.session.nextTurn&&!!state.session.operationId;
         const pausedFiles=state.session.paused&&['result_ready','attaching_files'].includes(state.session.pausedPhase)&&!!state.session.attachments?.length&&!!state.session.resultText&&!!state.session.nextTurn&&!!state.session.operationId;
-        if(oldSizeResult||pausedFiles){
+        const uncertainDelivery=state.session.phase==='delivery_uncertain'||state.session.pausedPhase==='delivery_uncertain';
+        if(uncertainDelivery&&!(state.session.resultText&&state.session.nextTurn&&state.session.operationId))throw Error('Saved delivery identity is unavailable');
+        if(oldSizeResult||pausedFiles||uncertainDelivery){
           state.session.userPaused=false;
-          const restored=await reattachDelivery({tab:{id:state.session.tabId}},{pageInstance:state.session.pageInstance});
+          const restored=await reattachDelivery({tab:{id:Number.isInteger(m.tabId)?m.tabId:state.session.tabId}},{pageInstance:state.session.pageInstance});
           if(!restored.accepted)throw Error(state.session.error);
           break;
         }
@@ -403,12 +405,22 @@ async function reattachDelivery(sender,m){
   try{
     const armed=await armPage(sender.tab.id,{type:'studio.arm',sessionId:s.sessionId,sessionMarker:s.sessionMarker,turnless:!!s.turnless,recover:true,recoverTurn:s.nextTurn,toolNames:s.toolNames.map(n=>state.tools.find(t=>t.name===n)).filter(Boolean)});
     if(!armed?.supported){s.error='AI Studio page is not ready; delivery remains uncertain';if(unsentSizeResult)retainUnsent();await save();return {accepted:false};}
+    const matchesAddress=!s.bindingAddress||armed.chatAddress===s.bindingAddress;
+    const matchesMarker=!s.sessionMarker||armed.chatMarkers?.includes(s.sessionMarker);
+    const identified=s.bindingAddress&&s.sessionMarker;
+    if(!matchesAddress||!matchesMarker||sender.tab.id!==s.tabId&&!identified)throw Error('Откройте исходный сохранённый чат: адрес и маркер должны совпадать');
+    if(sender.tab.id!==s.tabId){
+      s.tabId=sender.tab.id;
+      const {bridgeChatBindings:bindings={}}=await chrome.storage.local.get('bridgeChatBindings');
+      bindings[s.sessionMarker]={tabId:s.tabId,address:s.bindingAddress};
+      await chrome.storage.local.set({bridgeChatBindings:bindings});
+    }
     s.pageInstance=m.pageInstance;s.paused=false;s.userPaused=false;s.resumeBlocked=false;s.phase='delivery_uncertain';s.pausedPhase='';s.error='Checking whether the saved result reached this chat';await save();
     const chk=await chrome.tabs.sendMessage(sender.tab.id,{type:'studio.snapshot',sessionId:s.sessionId,operationId:s.operationId,expectedResultText:s.resultText});
     if(!chk?.supported){s.error='AI Studio page is not ready; delivery remains uncertain';if(unsentSizeResult)retainUnsent();await save();return {accepted:!unsentSizeResult};}
     if(chk.delivered){completeDelivery();await save();}else if(unsentFiles){s.phase='result_ready';s.paused=false;s.error='';s.notice='Файл сохранён. Нажмите «Передать результат», чтобы прикрепить его в текущем чате.';await save();}else if(unsentSizeResult){s.phase='result_ready';s.paused=false;s.error='';await save();if(s.automatic)try{await deliver(true);}catch(e){s.error=String(e.message||e);await save();}}else{s.error='Result is not visible yet; waiting for delivery proof. It will not be sent again.';await save();}
     return {accepted:true};
-  }catch(e){s.phase='delivery_uncertain';s.paused=false;s.resumeBlocked=false;s.error='Could not check delivery in AI Studio; the saved result will not be sent again';if(unsentSizeResult)retainUnsent();await save();return {accepted:false};}
+  }catch(e){s.phase=unsentFiles?'paused':'delivery_uncertain';s.paused=unsentFiles;s.resumeBlocked=false;if(unsentFiles){s.pausedPhase='result_ready';s.reasonCode='page_unavailable';}s.error='Could not check delivery in AI Studio: '+String(e.message||e);if(unsentSizeResult)retainUnsent();await save();return {accepted:false};}
 }
 async function armPage(tabId,message){
   try{return await chrome.tabs.sendMessage(tabId,message);}catch(e){

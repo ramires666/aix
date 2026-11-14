@@ -44,6 +44,22 @@ test('service JSON preference reflects state and sends both checkbox values', as
   assert.deepEqual(p.messages.filter(x => x.type === 'bridge.cleanupPreference').map(x => x.enabled), [false, true]);
 });
 
+test('resume identifies the currently selected tab for saved-chat recovery',async()=>{
+  const panel=createPanel();
+  await panel.click('resume');
+  assert.equal(panel.messages.at(-1).type,'bridge.resume');
+  assert.equal(panel.messages.at(-1).tabId,1);
+});
+
+test('uncertain delivery offers a read-only check while execution uncertainty stays blocked',async()=>{
+  const panel=createPanel();
+  await panel.update({session:{phase:'delivery_uncertain',paused:false,resultText:'saved'}});
+  assert.equal(panel.get('resume').disabled,false);
+  assert.equal(panel.get('resume').textContent,'Проверить доставку');
+  await panel.update({session:{phase:'paused',paused:true,resumeBlocked:true,reasonCode:'outcome_unknown'}});
+  assert.equal(panel.get('resume').disabled,true);
+});
+
 test('native-file delivery defaults on and its preference is preserved across polls',async()=>{
   const p=createPanel();await p.update({connected:true,session:{phase:'waiting_model'},autoSettings:{consent:true,agentId:'a',toolNames:['read_file']},tools:[],agents:[]});
   assert.equal(p.get('attach-files').checked,true);

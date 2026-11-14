@@ -250,6 +250,50 @@ test('resuming paused files rearms the page and checks delivery before another t
   }
 });
 
+test('resume rebinds a restored chat only when its saved address and marker both match',async()=>{
+  const marker='a'.repeat(32),address='/prompts/original';
+  for(const variant of ['matching','wrong address','wrong marker','missing page','reused tab']){
+    const initial=saved('paused');
+    Object.assign(initial.session,{paused:true,userPaused:true,pausedPhase:'attaching_files',sessionMarker:marker,bindingAddress:address,
+      operationId:'op-file',operationKey:'file-key',nextTurn:'next',pendingCall:{name:'read_file',arguments:{path:'W:/file.txt'}},
+      resultText:JSON.stringify({type:'helper-result',operation_id:'op-file',name:'read_file',result:{}}),
+      attachments:[{id:'file',name:'file.txt',data:'ZmlsZQ==',encodedLength:8,size:4,mimeType:'text/plain'}]});
+    const h=harness(initial,{sendMessage:async(_id,message)=>{
+      if(variant==='missing page')throw Error('No tab with id');
+      return{ok:true,supported:true,delivered:false,chatAddress:['wrong address','reused tab'].includes(variant)?'/prompts/other':address,chatMarkers:[variant==='wrong marker'?'b'.repeat(32):marker]};
+    }},{bridgeAuto:{enabled:false,consent:true}});
+    await h.status();
+    const response=await h.message({type:'bridge.resume',tabId:variant==='reused tab'?7:23},h.panel);
+    const state=(await h.status()).state.session;
+    assert.equal(response.ok,variant==='matching',variant);
+    assert.equal(state.tabId,variant==='matching'?23:7,variant);
+    assert.equal(state.phase,variant==='matching'?'result_ready':'paused',variant);
+    assert.equal(state.operationId,'op-file');
+    assert.equal(state.attachments.length,1);
+    assert.equal(h.createCount,0);
+    assert.equal(h.deliveryCount,0);
+    if(variant==='matching')assert.equal(h.localData.bridgeChatBindings[marker].tabId,23);
+  }
+});
+
+test('checking uncertain delivery reads proof without resending the saved result or tool',async()=>{
+  for(const delivered of [false,true]){
+    const initial=saved('delivery_uncertain');
+    Object.assign(initial.session,{operationId:'op-file',operationKey:'file-key',nextTurn:'next',pendingCall:{name:'read_file',arguments:{path:'W:/file.txt'}},
+      resultText:JSON.stringify({type:'helper-result',operation_id:'op-file',name:'read_file',result:{}}),
+      attachments:[{id:'file',name:'file.txt',data:'ZmlsZQ==',encodedLength:8,size:4,mimeType:'text/plain'}]});
+    const h=harness(initial,{snapshotDelivered:delivered},{bridgeAuto:{enabled:true,consent:true}});
+    await h.status();
+    const response=await h.message({type:'bridge.resume'},h.panel);
+    assert.equal(response.ok,true,response.error);
+    const state=(await h.status()).state.session;
+    assert.equal(state.phase,delivered?'waiting_model':'delivery_uncertain');
+    assert.equal(h.createCount,0);
+    assert.equal(h.deliveryCount,0);
+    if(!delivered){assert.equal(state.operationKey,'file-key');assert.ok(state.resultText);}
+  }
+});
+
 test('file delivery is chunked, private to its operation and completes without a second agent read',async()=>{
   const bytes=Buffer.from('file data Привет\n'.repeat(10000)),data=bytes.toString('base64'),sha256=require('node:crypto').createHash('sha256').update(bytes).digest('hex');
   const initial=saved();initial.session.automatic=true;
