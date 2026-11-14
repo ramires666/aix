@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"webcodex/internal/buildinfo"
 	"webcodex/internal/protocol"
 )
 
@@ -102,7 +103,8 @@ func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			"jsonrpc": "2.0",
 			"id":      msg.ID,
 			"result": map[string]any{
-				"protocolVersion": mcpProtocolVersion,
+				"protocolVersion":  mcpProtocolVersion,
+				"bridgeOperations": map[string]any{"lookupByKey": true},
 				"capabilities": map[string]any{
 					"tools": map[string]any{
 						"listChanged": false,
@@ -111,7 +113,7 @@ func (s *server) handleMCP(w http.ResponseWriter, r *http.Request) {
 				"serverInfo": map[string]string{
 					"name":    "local-workspace",
 					"title":   "Local Workspace",
-					"version": "1.0.0",
+					"version": buildinfo.Version,
 				},
 				"instructions": instructions,
 			},

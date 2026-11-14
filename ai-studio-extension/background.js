@@ -564,10 +564,10 @@ async function recover(){if(restoreError)return;const revision=authorizationRevi
     const pinned=await usePinnedClient(s);
     if(s.operationId)result=await pinned.getOperation(s.operationId);
     else {
-      if(s.transport==='local') {
-        if(!pinned.getOperationByKey){const error=Error('Обновите агент для восстановления операции по ключу');error.code='LOOKUP_UNSUPPORTED';throw error;}
+      if(s.transport==='local'||s.transport==='gate') {
+        if(!pinned.getOperationByKey){const error=Error('Обновите '+(s.transport==='gate'?'Gate':'агент')+' для восстановления операции по ключу');error.code='LOOKUP_UNSUPPORTED';throw error;}
         result=await pinned.getOperationByKey(s.operationKey);
-        if(!result||!['not_found','expired','running','completed','failed','outcome_unknown'].includes(result.status)||!['not_found','expired'].includes(result.status)&&!result.operation_id)throw Error('Invalid operation lookup response');
+        if(!result||!['not_found','expired','accepted','dispatching','running','completed','failed','outcome_unknown'].includes(result.status)||!['not_found','expired'].includes(result.status)&&!(result.operation_id||result.id))throw Error('Invalid operation lookup response');
       }
       if(!result||result.status==='not_found') {
         if(s.paused)return;

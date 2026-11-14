@@ -387,8 +387,30 @@ func (s *server) handleBridgeGetOperation(w http.ResponseWriter, r *http.Request
 	var result []byte
 	var e sql.NullString
 	var expiry string
-	err = s.store.db.QueryRowContext(r.Context(), `SELECT id,key,name,agent_id,status,result,error,expires_at FROM bridge_operations WHERE id=? AND client_id=?`, id, client.ID).Scan(&op.ID, &op.Key, &op.Name, &op.AgentID, &op.Status, &result, &e, &expiry)
+	column, value := "id", id
+	if id == "by-key" {
+		column, value = "key", r.URL.Query().Get("key")
+		parts := strings.SplitN(value, "-", 2)
+		if !bridgeOperationKey.MatchString(value) || len(parts) != 2 || uuid.Validate(parts[1]) != nil {
+			http.Error(w, "invalid key", http.StatusBadRequest)
+			return
+		}
+	}
+	err = s.store.db.QueryRowContext(r.Context(), `SELECT id,key,name,agent_id,status,result,error,expires_at FROM bridge_operations WHERE `+column+`=? AND client_id=?`, value, client.ID).Scan(&op.ID, &op.Key, &op.Name, &op.AgentID, &op.Status, &result, &e, &expiry)
 	if errors.Is(err, sql.ErrNoRows) {
+		if column == "key" {
+			keyMillis, parseErr := strconv.ParseInt(strings.SplitN(value, "-", 2)[0], 10, 64)
+			if parseErr != nil || time.UnixMilli(keyMillis).After(time.Now().Add(time.Minute)) {
+				http.Error(w, "invalid key timestamp", http.StatusBadRequest)
+				return
+			}
+			status := "not_found"
+			if time.UnixMilli(keyMillis).Before(time.Now().Add(-5 * time.Minute)) {
+				status = "expired"
+			}
+			writeJSON(w, map[string]string{"status": status})
+			return
+		}
 		http.Error(w, "not found", 404)
 		return
 	}
@@ -397,8 +419,7 @@ func (s *server) handleBridgeGetOperation(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if !parseDBTime(expiry).After(time.Now()) {
-		_, _ = s.store.db.ExecContext(r.Context(), `UPDATE bridge_operations SET result=NULL,error=NULL WHERE id=?`, id)
-		http.Error(w, "operation expired", 410)
+		writeJSON(w, map[string]string{"status": "expired"})
 		return
 	}
 	agents, err := s.mcpAgents(r.Context(), client)

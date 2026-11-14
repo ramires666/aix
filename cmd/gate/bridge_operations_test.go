@@ -10,11 +10,83 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
 	"webcodex/internal/protocol"
 )
+
+func TestBridgeOperationLookupByKeyIsReadOnlyAndScoped(t *testing.T) {
+	srv, cleanup := setupTestServer(t)
+	defer cleanup()
+	ctx := context.Background()
+	if err := srv.store.initBridgeOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"lookup-owner", "lookup-other"} {
+		if err := createTestAgent(srv.store, ctx, Agent{ID: id, Name: id, Enabled: true, AgentTokenHash: hashSecret(id)}, id, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.store.CreateAccessToken(ctx, AccessToken{TokenHash: hashSecret(id + "-token"), ClientID: id, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := fmt.Sprintf("%d-550e8400-e29b-41d4-a716-446655440000", time.Now().UnixMilli())
+	op, err := srv.store.acceptBridgeOperation(ctx, "lookup-owner", bridgeOperationRequest{Key: key, Name: "read_file", AgentID: "lookup-owner", Arguments: map[string]any{"path": "fixture"}}, "hash", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(client, key string) (int, map[string]any) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/bridge/v1/operations/by-key?key="+url.QueryEscape(key), nil)
+		r.Header.Set("Authorization", "Bearer "+client+"-token")
+		w := httptest.NewRecorder()
+		srv.handleBridgeGetOperation(w, r)
+		var value map[string]any
+		if w.Code == http.StatusOK {
+			if err := json.Unmarshal(w.Body.Bytes(), &value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return w.Code, value
+	}
+	code, value := lookup("lookup-owner", key)
+	if code != 200 || value["id"] != op.ID || value["status"] != "accepted" {
+		t.Fatalf("owner lookup %d %v", code, value)
+	}
+	code, value = lookup("lookup-other", key)
+	if code != 200 || value["status"] != "not_found" || value["id"] != nil {
+		t.Fatalf("foreign lookup %d %v", code, value)
+	}
+	oldKey := fmt.Sprintf("%d-550e8400-e29b-41d4-a716-446655440001", time.Now().Add(-time.Hour).UnixMilli())
+	code, value = lookup("lookup-owner", oldKey)
+	if code != 200 || value["status"] != "expired" {
+		t.Fatalf("expired lookup %d %v", code, value)
+	}
+	code, _ = lookup("lookup-owner", "invalid")
+	if code != http.StatusBadRequest {
+		t.Fatalf("invalid key status %d", code)
+	}
+	var count int
+	var status string
+	if err := srv.store.db.QueryRow(`SELECT COUNT(*) FROM bridge_operations`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.db.QueryRow(`SELECT status FROM bridge_operations WHERE id=?`, op.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || status != "accepted" || len(srv.runtimeFor("lookup-owner").queue) != 0 {
+		t.Fatalf("lookup mutated operation count=%d status=%s", count, status)
+	}
+	if _, err := srv.store.db.Exec(`UPDATE agents SET enabled=0 WHERE id='lookup-owner'`); err != nil {
+		t.Fatal(err)
+	}
+	code, _ = lookup("lookup-owner", key)
+	if code != http.StatusForbidden {
+		t.Fatalf("revoked agent status %d", code)
+	}
+}
 
 func TestBridgeOperationAcceptanceIsIdempotentAndConflictsOnChangedArgs(t *testing.T) {
 	srv, cleanup := setupTestServer(t)

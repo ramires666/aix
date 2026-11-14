@@ -26,6 +26,7 @@ function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=fal
     }
   }));
   const gate={createClient:()=>({initialize:async()=>{calls.gate++;if(!gateAvailable)throw Error('gate offline');return{}},listTools:async()=>[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}}],listAgents:async()=>[{id:'remote',online:true}],createOperation:async()=>{calls.gate++;return{content:[{type:'text',text:'gate'}]}},getOperation:async()=>({}),rpc:async()=>({})})};
+  if(operations.gateClientFactory)gate.createClient=operations.gateClientFactory;
   const context={chrome,crypto:require('node:crypto').webcrypto,URL,URLSearchParams,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,JSON,Promise,Set,Map,Date,AbortSignal,AbortController,Math,Error,String,Object,Number,RegExp,console,btoa:s=>Buffer.from(s,'binary').toString('base64'),fetch:async()=>({ok:true,text:async()=>JSON.stringify({access_token:'new-token'})}),WebCodexProtocol, WebCodexSession:require('./session-state.js'), WebCodexAttachments:require('./attachments.js'),WebCodexMCP:gate,WebCodexLocal:native,importScripts(){},setTimeout,clearTimeout};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'background.js'),'utf8'),context,{filename:'background.js'});
   return{listeners,sessionStore,localStore,calls,chrome,disconnectLocal:()=>{disconnectLocal=true;}};
@@ -43,6 +44,26 @@ async function recoverOnce(h){
   h.listeners.alarm({name:'webcodex-recover'});
   return (await message(h,{type:'bridge.status'})).state.session;
 }
+
+test('a lost Gate response is looked up without creating again or switching to local',async()=>{
+  for(const paused of [false,true]){
+    const session=recoveringLocal(paused);Object.assign(session,{connected:true,transport:'gate',gateUrl:'https://gate.example',accessToken:'token'});
+    Object.assign(session.session,{transport:'gate',agentId:'remote'});
+    const methods=[];
+    const h=harness({session,gateAuth:true,operations:{gateClientFactory:()=>({
+      initialize:async()=>({}),
+      listTools:async()=>[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}}],
+      listAgents:async()=>[{id:'remote',online:true}],
+      getOperationByKey:async key=>{methods.push(['lookup',key]);return{id:'saved-gate-id',status:'completed',result:{content:[{type:'text',text:'Gate recovered'}]}};},
+      createOperation:async()=>{throw Error('must not create a recovered operation');}
+    })}});
+    const state=await recoverOnce(h);
+    assert.deepEqual(methods,[['lookup','saved-key']]);
+    assert.equal(state.transport,'gate');assert.equal(state.agentId,'remote');
+    assert.equal(state.operationId,'saved-gate-id');assert.match(state.resultText,/Gate recovered/);
+    assert.equal(state.phase,paused?'paused':'result_ready');assert.equal(h.calls.local,0);
+  }
+});
 
 test('lost create response recovers by key with no create or Gate request, including while paused',async()=>{
   for(const paused of [false,true]){

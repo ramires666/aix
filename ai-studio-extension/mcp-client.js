@@ -20,7 +20,7 @@
     if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || !(url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) throw new Error('MCP base URL must be an HTTPS origin (HTTP is allowed for localhost)');
     if (typeof token !== 'string' || !token) throw new Error('MCP token is required');
     const origin = url.origin;
-    let nextId = 0;
+    let nextId = 0, lookupByKey = false;
     async function readResponse(response) {
       if (!response.body || !response.body.getReader) {
         const bytes = new TextEncoder().encode(await response.text());
@@ -87,6 +87,7 @@
     async function rpc(method, params = {}, signal) { return request(method, params, signal); }
     async function initialize(signal) {
       const result = await request('initialize', { protocolVersion: VERSION, capabilities: {}, clientInfo: { name: 'WebCodex AI Studio Bridge', version: '0.4.0' } }, signal);
+      lookupByKey = result?.bridgeOperations?.lookupByKey === true;
       const response = await fetchImpl(origin + '/mcp/v5', { method: 'POST', signal: requestSignal(signal), headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'MCP-Protocol-Version': VERSION }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} }) });
       if (!response.ok || response.status !== 202) throw httpError('MCP initialized notification', response.status);
       return result;
@@ -114,12 +115,16 @@
       return bridge('/bridge/v1/operations', 'POST', { key, name, arguments: args, agent_id: agentId }, signal);
     }
     async function getOperation(id, signal) { return bridge('/bridge/v1/operations/' + encodeURIComponent(id), 'GET', undefined, signal); }
+    function getOperationByKey(key, signal) {
+      if (!lookupByKey) { const error = Error('Обновите Gate для восстановления операции по ключу'); error.code = 'LOOKUP_UNSUPPORTED'; throw error; }
+      return bridge('/bridge/v1/operations/by-key?key=' + encodeURIComponent(key), 'GET', undefined, signal);
+    }
     async function bridge(path, method, body, signal) {
       const response = await fetchImpl(origin + path, { method, signal: requestSignal(signal), headers: { Authorization: 'Bearer ' + token, Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
       if (!response.ok) throw httpError('Bridge', response.status);
       const text = await readResponse(response); try { return JSON.parse(text); } catch (_) { throw new Error('Invalid bridge JSON response'); }
     }
-    return { rpc, initialize, listTools, listAgents, createOperation, getOperation };
+    return { rpc, initialize, listTools, listAgents, createOperation, getOperation, getOperationByKey };
   }
   return { createClient };
 });

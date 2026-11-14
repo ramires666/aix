@@ -12,6 +12,27 @@ function clientWith(handler) {
 }
 const rpcResult = (body, id = 1) => response(JSON.stringify({ jsonrpc: '2.0', id, result: body }));
 
+test('Gate key lookup is negotiated and always uses a separate read-only request',async()=>{
+  for(const supported of [true,false]){
+    const {client,calls}=clientWith((url,init)=>{
+      if(init.method==='GET')return response(JSON.stringify({status:'not_found'}));
+      const request=JSON.parse(init.body);
+      if(request.method==='notifications/initialized')return response('',{status:202});
+      return rpcResult({bridgeOperations:{lookupByKey:supported}},request.id);
+    });
+    await client.initialize();
+    if(supported){
+      assert.deepEqual(await client.getOperationByKey('key with spaces'),{status:'not_found'});
+      assert.equal(calls.at(-1).init.method,'GET');
+      assert.equal(calls.at(-1).init.body,undefined);
+      assert.equal(calls.at(-1).url,'https://example.test/bridge/v1/operations/by-key?key=key%20with%20spaces');
+    }else{
+      assert.throws(()=>client.getOperationByKey('saved'),error=>error.code==='LOOKUP_UNSUPPORTED');
+      assert.equal(calls.length,2);
+    }
+  }
+});
+
 test('validates base URL and keeps credentials out of errors', () => {
   for (const baseUrl of ['https://u:p@example.test', 'https://example.test/path', 'https://example.test?q=1', 'http://example.test', 'ftp://localhost']) assert.throws(() => createClient({ baseUrl, token: 'secret' }));
   assert.doesNotThrow(() => createClient({ baseUrl: 'http://127.0.0.1', token: 'secret' }));
