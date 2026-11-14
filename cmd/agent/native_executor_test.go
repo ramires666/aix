@@ -229,7 +229,11 @@ func TestParallelCommandDirectoriesAreIndependent(t *testing.T) {
 	}
 	wait.Wait()
 	for index, result := range results {
-		if !strings.Contains(strings.ToLower(result["output"].(string)), strings.ToLower(dirs[index])) {
+		canonical, err := filepath.EvalSymlinks(dirs[index])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(strings.ToLower(result["output"].(string)), strings.ToLower(canonical)) {
 			t.Fatalf("cwd %s result: %v", dirs[index], result)
 		}
 	}

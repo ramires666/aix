@@ -26,6 +26,10 @@ func TestRealGateAndLocalExecutorEndToEnd(t *testing.T) {
 	srv, cleanup := setupTestServer(t)
 	defer cleanup()
 	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	logs := filepath.Join(root, "logs")
 	agentToken := "wc_agent_real_e2e"
 	mcpToken := "wc_mcp_real_e2e"

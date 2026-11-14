@@ -398,10 +398,10 @@ func (l *browserBridge) callFrame(ctx context.Context, tabID int, frameID, metho
 	}
 	browserMarkDispatch(ctx, method)
 	if err := l.sendContext(ctx, browserBridgeMessage{Kind: "command", ID: id, TabID: tabID, FrameID: frameID, Method: method, Params: params, CommandProtocol: protocol, ConnectionID: connection, ScopeEpoch: epoch, DeadlineMS: deadline.UnixMilli(), ExpectedURL: expectedURL, ExpectedWindowID: expectedWindow}); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+		// Cancellation can win after bytes reached the peer. Still send command_cancel below.
+		if ctx.Err() == nil {
+			return toolErr("disconnected", "native bridge write failed")
 		}
-		return toolErr("disconnected", "native bridge write failed")
 	}
 	select {
 	case response, ok := <-ch:
