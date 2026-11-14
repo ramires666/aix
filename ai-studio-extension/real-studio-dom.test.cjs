@@ -93,11 +93,14 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const recovered=WebCodexProtocol.parseCall(adapter.inspect().latestModel.text,null,[{name:'list_directory',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false}}]);
   if(recovered?.arguments.path!=='W:'+String.fromCharCode(92)+'algo')throw Error('inline Markdown Windows path changed');cases++;
   const prompt=document.querySelector('ms-prompt-input-wrapper'),run=document.querySelector('button[aria-label="Run"]');
+  const removeGrounding=document.createElement('button');removeGrounding.setAttribute('aria-label','Remove Grounding with Google Search');prompt.append(removeGrounding);
   const input=document.createElement('input');input.type='file';prompt.append(input);
   const chip=document.createElement('span');prompt.append(chip);
   input.addEventListener('change',()=>{chip.textContent=input.files[0]?.name||'';run.disabled=true;const progress=document.createElement('div');progress.setAttribute('role','progressbar');prompt.append(progress);setTimeout(()=>{progress.remove();run.disabled=false;},25);});
   const source='native file Привет 😀\\r\\nwith bytes';const file=new File([source],'readme.txt',{type:'text/plain'});
   if(!adapter.stage('small result metadata'))throw Error('file metadata staging failed');
+  const removeAttachment=document.createElement('button');removeAttachment.setAttribute('aria-label','Remove attachment');prompt.append(removeAttachment);
+  if((await adapter.attachFiles([file],{key:'blocked-file',isCurrent:()=>true})).ok||input.files.length)throw Error('existing attachment removal control was ignored');removeAttachment.remove();cases++;
   const upload=await adapter.attachFiles([file],{key:'native-file',isCurrent:()=>true});
   if(!upload.ok||await input.files[0].text()!==source)throw Error('native FileList upload changed content');
   adapter.releaseFiles('native-file');if(input.files.length!==0)throw Error('owned file input was not released');cases++;
@@ -138,5 +141,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:83');t.diagnostic('83 scenarios passed in installed Chrome, including automatic system dialog close, full tool list and Run Ctrl');
+  assert.equal(result,'PASS:84');t.diagnostic('84 scenarios passed in installed Chrome, including tool chips, automatic dialog close, full tool list and Run Ctrl');
 });

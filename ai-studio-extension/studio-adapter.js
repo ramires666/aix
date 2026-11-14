@@ -305,7 +305,7 @@
       if(globalInputs.length>1)return{ok:false,error:'Найдено несколько полей загрузки файлов; загрузка не начата'};
       const input=globalInputs[0];
       const existingAssets=allElements('img, video, audio, ms-prompt-attachment, ms-file-preview, ms-attachment, .attachment, .file-preview, .file-chip, [data-file-name], [data-attachment-id]',scope);
-      const removeAssets=allElements('button',scope).some(button=>labels(button).some(label=>/^(?:remove|delete|удалить)(?:\s+(?:file|attachment|asset|файл|вложение))?(?:\s|$)/i.test(label)));
+      const removeAssets=allElements('button',scope).some(button=>labels(button).some(label=>/^(?:remove|delete|удалить)\s+(?:files?|attachments?|assets?|файл(?:ы)?|вложени[ея])(?:\s|$)/i.test(label)));
       if(input?.files?.length||existingAssets.length||removeAssets||names.some(name=>scopeLabels().includes(name)))return{ok:false,error:'В поле уже есть вложения. Они сохранены; новое прикрепление не начато'};
       if(input&&!input.multiple&&files.length>1)return{ok:false,error:'Штатное поле принимает только один файл'};
       const transfer=new view.DataTransfer();for(const file of files)transfer.items.add(file);
