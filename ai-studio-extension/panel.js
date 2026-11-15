@@ -58,7 +58,6 @@
     const previousError = state?.session?.error||state?.pageScript?.observerError;
     state = next;
     if (Number.isInteger(next.chatWidth) && !chatWidthEditing && document.activeElement !== $('chat-width')) $('chat-width').value = String(next.chatWidth);
-    $('chat-width-value').textContent = Number($('chat-width').value) === 0 ? 'default' : Number($('chat-width').value) === 100 ? 'Max' : `${$('chat-width').value}%`;
     const session = next.session || {};
     const page = next.pageScript;
     const agentVersion = next.connected && next.transport !== 'gate' ? next.agentVersion || 'версия не передана' : 'не подключён';
@@ -177,7 +176,6 @@
   $('chat-width').addEventListener('input', async () => {
     chatWidthEditing = true;
     const value = Number($('chat-width').value);
-    $('chat-width-value').textContent = value === 0 ? 'default' : value === 100 ? 'Max' : `${value}%`;
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       await act('bridge.chatWidth', { tabId: tab?.id, value });
