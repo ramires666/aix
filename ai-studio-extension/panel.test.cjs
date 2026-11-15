@@ -31,6 +31,7 @@ function createPanel(store = {}, options = {}) {
     if (failAction) { failAction = false; return cb({ ok: false, error: 'Action failed' }); }
     cb({ ok: true, state: snapshot });
   } }, storage: { local: { async get() { if (options.storageRead) await options.storageRead.promise; return { bridgeConnection: store.bridgeConnection }; }, async set(values) { Object.assign(store, values); } } }, tabs: { query: async () => [{ id: 1 }] }, permissions: { request: () => options.permission?.promise || Promise.resolve(true) }, identity: { getRedirectURL: () => 'https://redirect/' } };
+  if(options.localOnly)delete chrome.identity;
   const context = vm.createContext({ chrome, document, URL, setInterval(fn) { poll = fn; } });
   vm.runInContext(fs.readFileSync(require.resolve('./panel.js'), 'utf8'), context);
   return { get: id => document.getElementById(id), messages, async ready() { if (options.storageRead) await options.storageRead.promise; await Promise.resolve(); await poll(); }, async update(value) { snapshot = value; await poll(); }, fail() { failAction = true; }, click(id) { return document.getElementById(id).listeners.click(); }, change(id, checked) { const el = document.getElementById(id); el.checked = checked; return el.listeners.change(); }, select(group, value, checked = true) { const container = document.getElementById(group), input = container.querySelectorAll('input').find(x => x.value === value); for (const item of container.querySelectorAll('input')) item.checked = item === input && checked; return container.listeners.change(); }, input(id, value) { const el = document.getElementById(id); el.value = value; return el.listeners.input(); }, get connectCount() { return connectCount; } };
@@ -417,4 +418,15 @@ test('permission toggle clears every checkbox and updates after individual edits
   assert.equal(panel.get('allow-all').textContent,'Разрешить всё');
   await panel.click('allow-all');
   assert.equal(panel.get('allow-all').textContent,'Снять все галочки');
+});
+
+
+test('local extension starts without OAuth permission or identity API', async () => {
+  const manifest = JSON.parse(fs.readFileSync(require.resolve('./manifest.json'),'utf8'));
+  assert.equal(manifest.permissions.includes('identity'),false);
+  assert.equal(manifest.optional_host_permissions,undefined);
+  assert.deepEqual(manifest.host_permissions,['https://aistudio.google.com/*','http://127.0.0.1/*']);
+  const panel = createPanel({}, {localOnly:true});
+  await panel.ready();
+  assert.equal(panel.get('error').textContent,'');
 });

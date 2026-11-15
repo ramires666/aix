@@ -13,11 +13,11 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   const appdata = path.join(temp, 'appdata'), root = path.join(temp, 'files');
   fs.mkdirSync(root);
   const executable = process.env.WEBCODEX_TEST_AGENT_PATH || path.resolve(__dirname, '..', 'bin', 'ai-studio-bridge', 'webcodex-agent.exe');
-  const env = { ...process.env, APPDATA: appdata, LOCALAPPDATA: path.join(temp, 'localappdata'), WEBCODEX_ALLOWED_ROOTS: root, WEBCODEX_GATE_URL: '', WEBCODEX_AGENT_TOKEN: '' };
+  const env = { ...process.env, APPDATA: appdata, LOCALAPPDATA: path.join(temp, 'localappdata'), WEBCODEX_ALLOWED_ROOTS: root, WEBCODEX_GATE_URL: process.env.WEBCODEX_AIX_LOCAL_ONLY === '1' ? 'http://127.0.0.1:1' : '', WEBCODEX_AGENT_TOKEN: process.env.WEBCODEX_AIX_LOCAL_ONLY === '1' ? 'unused-test-token' : '' };
   const children = [];
   let logs = '';
   function start() {
-    const child = spawn(executable, ['--local'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+    const child = spawn(executable, process.env.WEBCODEX_AIX_LOCAL_ONLY === '1' ? [] : ['--local'], { cwd: root, env, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
     child.logs = ''; child.stderr.on('data', data => { logs += data; child.logs += data; }); children.push(child); return child;
   }
   async function stop(child) { if (child.exitCode !== null || child.signalCode !== null) return; await new Promise(resolve => { child.once('exit', resolve); child.kill(); }); }
@@ -104,7 +104,7 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   assert.deepEqual(await client.createOperation(args), op);
   client.close();
   assert.ok(logs.includes('Studio local connected: agent='+release.webcodexRelease.agent+' extension='+release.version));
-  assert.match(logs, /Gate не используется/);
+  assert.match(logs, /Gate не используется|Google AI Studio local agent ready/);
   assert.doesNotMatch(logs, /connected to Gate|Не удалось получить настройки/);
   assert.equal(fs.existsSync(path.join(appdata, 'webcodex', 'studio', 'native-host.json')), false);
   assert.equal(fs.existsSync(path.join(appdata, 'webcodex', 'studio', 'settings.json')), false);

@@ -120,7 +120,7 @@
     try { const next = await send(type, payload); if (next) render(next); }
     catch (error) { showError(error); }
   }
-  $('redirect-uri').textContent = `${chrome.identity.getRedirectURL('webcodex')}  ·  Extension ID: ${chrome.runtime.id}`;
+  $('redirect-uri').textContent = `${chrome.identity?.getRedirectURL('webcodex') || ''}  ·  Extension ID: ${chrome.runtime.id}`;
   $('connect').addEventListener('click', async () => {
     if (connecting || state?.connecting) return;
     connecting = true;

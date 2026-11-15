@@ -1,3 +1,5 @@
+//go:build !aistudio
+
 // Command agent connects a local file and process executor to the public gate.
 package main
 
