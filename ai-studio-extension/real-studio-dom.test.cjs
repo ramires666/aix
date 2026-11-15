@@ -243,6 +243,21 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   adapter.setChatWidth(0);widthPane.style.width='1000px';
   if(Math.abs(widthTurn.getBoundingClientRect().width-600)>1||widthTurn.style.maxWidth!=='600px'||widthTurn.textContent!=='Width geometry')throw Error('default chat width or text was not restored');
   widthPane.remove();cases++;
+  const rawInputPayload=(String.fromCharCode(34,39,92,10)+'Unicode Привет raw document').repeat(2000);
+  const rawInputMarker='c'.repeat(32);
+  const rawInputFrame=['HELPER_'+rawInputMarker+' exec_command','cwd: W:/work','argv: ["python","-"]','---',rawInputPayload,'END_'+rawInputMarker].join(String.fromCharCode(10));
+  const rawInputPre=document.createElement('pre');rawInputPre.textContent=rawInputFrame;answer.replaceChildren(rawInputPre);
+  const rawInputTools=[{name:'exec_command',inputSchema:{type:'object',properties:{cwd:{type:'string'},argv:{type:'array',items:{type:'string'}},stdin:{type:'string'}},required:['cwd','argv'],additionalProperties:false}}];
+  const rawInputModel=adapter.inspect().latestModel;
+  const rawInputCall=WebCodexProtocol.parseCall(rawInputModel.text,null,rawInputTools,rawInputModel);
+  if(rawInputCall.arguments.stdin!==rawInputPayload||rawInputCall.arguments.argv.join('|')!=='python|-')throw Error('large raw stdin source was changed in rendered DOM');cases++;
+  const editingWrapper=document.createElement('ms-autosize-textarea'),editingSource=document.createElement('textarea');editingSource.value=rawInputFrame;editingWrapper.append(editingSource);answer.append(editingWrapper);
+  const editingDraft=document.querySelector('ms-prompt-input-wrapper textarea').value;
+  const editingSnapshot=adapter.inspect();
+  if(!editingSnapshot.supported||!editingSnapshot.editingReply||editingSnapshot.generating||adapter.stage('must wait'))throw Error('reply editor was confused with composer or generation');
+  if(document.querySelector('ms-prompt-input-wrapper textarea').value!==editingDraft)throw Error('reply editing changed composer draft');
+  editingSource.hidden=true;if(adapter.inspect().editingReply)throw Error('hidden reply editor blocked conversation');
+  editingWrapper.remove();if(adapter.inspect().editingReply)throw Error('closed reply editor blocked conversation');cases++;
   const ownDraft=document.querySelector('textarea').value;let preserved=false;
   document.addEventListener('click',event=>{if(event.target===run){adapter.prepareSessionMessage(liveMarker);preserved=document.querySelector('textarea').value===ownDraft;}},true);
   if(!await adapter.submit(ownDraft)||!preserved)throw Error('Run capture modified the owned result');cases++;
@@ -263,5 +278,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:101',output.slice(-3000));t.diagnostic('101 scenarios passed in installed Chrome, including accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
+  assert.equal(result,'PASS:103',output.slice(-3000));t.diagnostic('103 scenarios passed in installed Chrome, including accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });

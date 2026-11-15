@@ -1017,6 +1017,33 @@ test('manual history collapse leaves ordinary dialogue and Helper examples witho
   assert.equal(button.clicked,undefined);
 });
 
+test('model reply editor is excluded from composer detection and blocks staging until closed',()=>{
+  const state=setup({draft:'keep composer draft'});
+  const editing=state.model.add(new Node('ms-autosize-textarea')).add(new Textarea('edited reply'));
+  let snapshot=state.adapter.inspect();
+  assert.equal(snapshot.supported,true);
+  assert.equal(snapshot.editingReply,true);
+  assert.equal(snapshot.editorEmpty,false);
+  assert.equal(state.adapter.stage('replacement'),false);
+  assert.equal(state.editor.value,'keep composer draft');
+  assert.equal(editing.value,'edited reply');
+  state.model.children=state.model.children.filter(node=>node!==editing.parent);
+  snapshot=state.adapter.inspect();
+  assert.equal(snapshot.editingReply,false);
+  assert.equal(snapshot.supported,true);
+  assert.equal(snapshot.editorEmpty,false);
+  assert.equal(state.editor.value,'keep composer draft');
+});
+
+test('reply editor does not hide two genuine composers',()=>{
+  const state=setup({extraEditors:1});
+  state.model.add(new Node('ms-autosize-textarea')).add(new Textarea('edited reply'));
+  const snapshot=state.adapter.inspect();
+  assert.equal(snapshot.editingReply,true);
+  assert.equal(snapshot.supported,false);
+  assert.match(snapshot.error,/ambiguous or missing editor/);
+});
+
 
 test('chat width expands constrained chat ancestors and restores exact default styles',()=>{
   const state=setup();let base=600;
@@ -1043,4 +1070,14 @@ test('chat width expands constrained chat ancestors and restores exact default s
   assert.equal(state.model.style.getPropertyValue('max-width'),'600px');
   assert.equal(state.model.style.getPropertyValue('box-sizing'),'');
   assert.equal(state.model.textContent,original);
+});
+
+
+test('opens a collapsed run settings panel before staging system instructions',async()=>{
+  const state=systemSetup();state.opener.hidden=true;
+  const toggle=state.root.add(new Node('button',{'aria-label':'Toggle run settings panel'}));
+  toggle.click=()=>{toggle.clicked=true;state.opener.hidden=false;};
+  assert.equal(await state.system('Helper tools'),true,state.adapter.getSystemStageError());
+  assert.equal(toggle.clicked,true);
+  assert.ok(state.dialogs[0].editor.value.includes('Helper tools'));
 });

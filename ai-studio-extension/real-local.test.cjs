@@ -80,6 +80,15 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   const rawWindowsRead=parseCall('{"v":1,"name":"read_file","arguments":{"path":"'+file+'"}}',null,tools);
   const recoveredRead=await client.createOperation({key:'raw-windows-path-read',...rawWindowsRead,agentId:'local'});
   assert.equal(recoveredRead.status,'completed');assert.equal(recoveredRead.result.structuredContent.content,'local works\n');
+  const stdin='line\n'.repeat(10000),stdinKey='large-command-stdin';
+  assert.ok(Buffer.byteLength(stdin)>32768);
+  const stdinArgv=['find.exe','/c','/v',''];
+  const stdinCall=parseCall('HELPER_large_stdin exec_command\ncwd: '+root.replaceAll('\\','/')+'\nyield_time_ms: 3000\nargv: '+JSON.stringify(stdinArgv)+'\n---\n'+stdin+'\nEND_large_stdin',null,tools);
+  const stdinResult=await client.createOperation({key:stdinKey,name:stdinCall.name,arguments:{...stdinCall.arguments,request_key:stdinKey},agentId:'local'});
+  assert.equal(stdinResult.status,'completed',JSON.stringify(stdinResult));
+  assert.equal(stdinResult.result.isError,false,JSON.stringify(stdinResult));
+  assert.equal(stdinResult.result.structuredContent.exit_code,0,JSON.stringify(stdinResult));
+  assert.match(stdinResult.result.structuredContent.stdout,/10000/,JSON.stringify(stdinResult));
   const largeCall=parseCall(JSON.stringify({v:1,name:'write_file',arguments:{path:largePath,if_absent:true},content_source:'large_file'})+'\n<<<HELPER_FILE_BEGIN:large_file>>>\n'+content+'\n<<<HELPER_FILE_END:large_file>>>',null,tools);
   const largeWrite=await client.createOperation({key:'large-write-once',...largeCall,agentId:'local'});
   assert.equal(largeWrite.status,'completed');assert.ok(fs.readFileSync(largePath,'utf8')===content,'large write must preserve exact UTF-8');

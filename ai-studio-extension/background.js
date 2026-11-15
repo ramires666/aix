@@ -508,7 +508,7 @@ async function arm(m) {
   const tab=await chrome.tabs.get(m.tabId);if(!tab.url?.startsWith('https://aistudio.google.com/'))throw Error('Active tab must be AI Studio');
   if(!demo&&!state.connected)throw Error(state.localError||'Connect to an agent first');
   state.session={phase:'arming',transport:demo?'demo':state.transport,localEndpoint:state.localEndpoint,localAgentIdentity:state.localAgentIdentity,agentId:m.agentId,toolNames:m.toolNames,automatic:!!m.automatic,autoApprove:!!m.autoApprove,paused:false,turnless:true,turn:uuid(),instructions:'',customInstructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:m.tabId,sessionId:uuid(),conversationKey:''};await save();
-  try {const snap=await armPage(m.tabId,{type:'studio.arm',sessionId:state.session.sessionId,turnless:true,hideServiceMessages:!!state.hideServiceMessages});
+  try {const snap=await armPage(m.tabId,{type:'studio.arm',sessionId:state.session.sessionId,turnless:true,hideServiceMessages:!!state.hideServiceMessages,toolNames:m.toolNames.map(name=>state.tools.find(tool=>tool.name===name)).filter(Boolean)});
     if(!snap?.supported)throw Error(snap?.error||'Unsupported chat');
     state.session.conversationKey=snap.conversationKey;state.session.phase='waiting_model';await bindChatMarker(snap,{select:true});await stageInstructions();await save();
   } catch(e){await chrome.tabs.sendMessage(m.tabId,{type:'studio.disarm',sessionId:state.session.sessionId}).catch(()=>{});state.session.phase='stopped';state.session.error=String(e.message||e);await save();throw e;}

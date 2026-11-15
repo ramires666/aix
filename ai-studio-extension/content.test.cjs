@@ -799,6 +799,16 @@ test('readReply attempts unavailable v2 source recovery only once and preserves 
   assert.equal(recoveries,1);
 });
 
+test('malformed structured v2 frame triggers one local exact-source recovery',async()=>{
+  const h=harness(),marker='a'.repeat(32),broken='HELPER_'+marker+' read_file\narguments: {"path":\nEND_'+marker,exact='HELPER_'+marker+' list_allowed_roots\nEND_'+marker;
+  await h.send({type:'studio.arm',sessionId:'s1',sessionMarker:marker,turnless:true});
+  h.state.latestUser={text:'request'};h.state.modelAfterUser=true;h.state.latestModel={text:broken,sourceRevision:'r1'};
+  let recoveries=0;h.setRecoveryHandler(async()=>{recoveries++;h.state.latestModel={text:exact,sourceText:exact,sourceRevision:'r1'};return true;});
+  const reply=await h.send({type:'studio.readReply',sessionId:'s1'});
+  assert.equal(recoveries,1);assert.equal(reply.ok,true);assert.equal(reply.text,exact);assert.equal(reply.sourceText,exact);
+  assert.equal(h.sent.some(message=>/repair|format/i.test(message.text||'')),false);
+});
+
 
 test('local raw recovery preserves the rejected reply response key',async()=>{
   const h=harness(),marker='a'.repeat(32);
@@ -820,4 +830,29 @@ test('explicit capture recovers a malformed current v2 call locally',async()=>{
   h.setRecoveryHandler(async()=>{h.state.latestModel={text:raw,sourceRevision:'r1'};return true;});
   const reply=await h.send({type:'studio.captureCall',sessionId:'s1',tools:[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path'],additionalProperties:false}}]});
   assert.equal(reply.ok,true);assert.equal(reply.text,raw);assert.equal(h.sent.filter(message=>message.type==='studio.call').length,0);
+});
+
+
+test('reply editing waits without reporting unsupported UI or executing the unfinished reply',async()=>{
+  const h=harness();await h.send({type:'studio.arm',sessionId:'s1',turnless:true});h.run();
+  h.state.generating=true;h.mutate();await h.flush();
+  h.state.generating=false;h.state.modelAfterUser=true;h.state.editingReply=true;
+  h.state.latestModel={text:'HELPER_'+ 'a'.repeat(32)+' list_allowed_roots\nEND_'+ 'a'.repeat(32),sourceRevision:'r1'};
+  h.mutate();await h.flush();
+  assert.equal(h.sent.filter(message=>message.type==='studio.call').length,0);
+  const snapshot=await h.send({type:'studio.snapshot',sessionId:'s1'});
+  assert.equal(snapshot.observerStatus,'editing_reply');assert.equal(snapshot.supported,true);
+  assert.equal((await h.send({type:'studio.readReply',sessionId:'s1'})).ok,false);
+  h.state.editingReply=false;h.mutate();await h.flush();
+  assert.equal(h.sent.filter(message=>message.type==='studio.call').length,1);
+});
+
+test('literal string parameters starting with braces do not trigger JSON source recovery',async()=>{
+  const h=harness(),marker='a'.repeat(32);
+  await h.send({type:'studio.arm',sessionId:'s1',sessionMarker:marker,turnless:true,toolNames:[{name:'read_file',inputSchema:{properties:{path:{type:'string'}}}}]});
+  h.state.latestUser={text:'request'};h.state.modelAfterUser=true;
+  h.state.latestModel={text:'HELPER_'+marker+' read_file\npath: {literal}.txt\nEND_'+marker,sourceRevision:'r1'};
+  let recoveries=0;h.setRecoveryHandler(async()=>{recoveries++;return false;});
+  assert.equal((await h.send({type:'studio.readReply',sessionId:'s1'})).ok,true);
+  assert.equal(recoveries,0);
 });

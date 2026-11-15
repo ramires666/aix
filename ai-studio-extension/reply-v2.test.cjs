@@ -5,7 +5,7 @@ const {Node,Textarea,setup}=require('./test-fixtures/studio-dom.cjs');
 const marker='0123456789abcdef0123456789abcdef';
 const tools=[
   {name:'write_file',inputSchema:{type:'object',properties:{path:{type:'string'},content:{type:'string'},if_absent:{type:'boolean',const:true}},required:['path','content','if_absent'],additionalProperties:false}},
-  {name:'exec_command',inputSchema:{type:'object',properties:{cwd:{type:'string'},command:{type:'string'},argv:{type:'array',items:{type:'string'}}},required:['cwd'],oneOf:[{required:['command'],not:{required:['argv']}},{required:['argv'],not:{required:['command']}}],additionalProperties:false}},
+  {name:'exec_command',inputSchema:{type:'object',properties:{cwd:{type:'string'},command:{type:'string'},argv:{type:'array',items:{type:'string'}},stdin:{type:'string'}},required:['cwd'],oneOf:[{required:['command'],not:{required:['argv']}},{required:['argv'],not:{required:['command']}}],additionalProperties:false}},
   {name:'list_allowed_roots',inputSchema:{type:'object',properties:{},additionalProperties:false}}
 ];
 const frame=(header,body)=>'HELPER_'+marker+' '+header+(body===undefined?'':'\n---\n'+body)+'\nEND_'+marker;
@@ -24,6 +24,17 @@ test('CRLF framing and structured argv remain exact',()=>{
   assert.deepEqual(parseCall(text.replaceAll('\n','\r\n'),null,tools),{name:'exec_command',arguments:{cwd:'W:/a',argv:['cmd.exe','/c','echo a:b']}});
 });
 
+test('large Python source stays exact in raw stdin while argv stays compact',()=>{
+  const source=('title = "quotes \' and \\\\ paths"\n```mermaid\nA --> B\n```\n').repeat(1800);
+  assert.ok(source.length>32768);
+  const text=frame('exec_command\ncwd: W:/a\nargv: ["python", "-"]',source);
+  assert.deepEqual(parseCall(text,null,tools),{name:'exec_command',arguments:{cwd:'W:/a',argv:['python','-'],stdin:source}});
+  assert.deepEqual(parseCall(frame('exec_command\ncwd: W:/a\nargv: ["python", "-c", "print(1)"]'),null,tools),{name:'exec_command',arguments:{cwd:'W:/a',argv:['python','-c','print(1)']}});
+  assert.throws(()=>parseCall(frame('exec_command\ncwd: W:/a\nargv: ["python", "-"]\nstdin: header value','raw body'),null,tools),/duplicate|Ambiguous/i);
+  const noStdinCapability=[{...tools[0]}, {...tools[1],inputSchema:{...tools[1].inputSchema,properties:{cwd:{type:'string'},argv:{type:'array',items:{type:'string'}}},oneOf:[{required:['argv']}]}},tools[2]];
+  assert.throws(()=>parseCall(text,null,noStdinCapability),/Unexpected|schema/i);
+});
+
 test('identical complete frames execute once and preserve nesting within raw bodies',()=>{
   const text=frame('write_file\npath: W:/a\nif_absent: true','{not JSON}\n'+frame('list_allowed_roots'));
   const state=setup();state.chunk.remove();const pre=state.model.children[0].add(new Node('pre',{},text));
@@ -39,7 +50,7 @@ test('identical complete frames execute once and preserve nesting within raw bod
 
 test('foreign markers, ambiguous parameters and missing raw bytes remain local errors',()=>{
   const valid=frame('write_file\npath: W:/a\nif_absent: true','data');
-  for(const text of [valid.replaceAll(marker,'b'.repeat(32)),valid.replace('path: W:/a','path: W:/a\npath: W:/b'),valid.replace('if_absent: true','if_absent: yes'),valid.replace('\nEND_'+marker,''),frame('exec_command\ncwd: W:/a\nargv: ["echo"]','echo bad'),frame('write_file\narguments: {"path":"W:/a","content":"duplicate","if_absent":true}','body')]){
+  for(const text of [valid.replaceAll(marker,'b'.repeat(32)),valid.replace('path: W:/a','path: W:/a\npath: W:/b'),valid.replace('if_absent: true','if_absent: yes'),valid.replace('\nEND_'+marker,''),frame('exec_command\ncwd: W:/a\nargv: ["echo"]\nstdin: duplicate','echo bad'),frame('write_file\narguments: {"path":"W:/a","content":"duplicate","if_absent":true}','body')]){
     assert.throws(()=>parseCall(text,null,tools,{sessionMarker:marker}));
   }
   const unmarked=valid.replaceAll('_'+marker,'');

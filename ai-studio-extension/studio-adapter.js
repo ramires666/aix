@@ -46,8 +46,14 @@
   };
   const editors = () => {
     const isSystemEditor = el => attr(el, 'placeholder') === 'Optional tone and style instructions for the model';
-    const scoped = elements('ms-prompt-input-wrapper textarea, ms-prompt-box textarea, ms-autosize-textarea textarea, ms-prompt-input-wrapper [contenteditable="true"], ms-prompt-box [contenteditable="true"], ms-autosize-textarea [contenteditable="true"]').filter(el => !isSystemEditor(el) && !inSystemPanel(el));
-    const candidates = scoped.length ? scoped : elements('textarea, [contenteditable="true"]').filter(el => !isSystemEditor(el) && !inSystemPanel(el));
+    const inTurn = el => {
+      for(let node=el.parentElement||el.parent;node;node=node.parentElement||node.parent){
+        if(['ms-chat-turn','model-prompt-container','[data-turn-role]','.chat-turn-container.user','.chat-turn-container.model'].some(selector=>node.matches?.(selector)))return true;
+      }
+      return false;
+    };
+    const scoped = elements('ms-prompt-input-wrapper textarea, ms-prompt-box textarea, ms-autosize-textarea textarea, ms-prompt-input-wrapper [contenteditable="true"], ms-prompt-box [contenteditable="true"], ms-autosize-textarea [contenteditable="true"]').filter(el => !isSystemEditor(el) && !inSystemPanel(el) && !inTurn(el));
+    const candidates = scoped.length ? scoped : elements('textarea, [contenteditable="true"]').filter(el => !isSystemEditor(el) && !inSystemPanel(el) && !inTurn(el));
     return [...new Set(candidates)].filter((el) => !el.disabled && !el.readOnly && attr(el, 'aria-disabled') !== 'true');
   };
   const controls = () => elements('button');
@@ -226,6 +232,7 @@
       return { conversationKey: '', generating: false, editorEmpty: false, supported: false, error: 'unsupported site', latestModel: null, latestUser: null };
     const candidateEditors = editors();
     const recognized = turns();
+    const editingReply = recognized.some(turn => ['user','model'].includes(role(turn)) && elements('textarea, [contenteditable="true"]',turn).some(el=>!el.disabled&&!el.readOnly&&attr(el,'aria-disabled')!=='true'));
     const roles = recognized.map(role);
     const unsupportedRole = recognized.some((el, i) => !roles[i] && roleMarkers(el).length > 0 || new Set(roleMarkers(el)).size > 1);
     const runs = submitButtons(), run = runs.length === 1 ? runs[0] : null;
@@ -284,6 +291,7 @@
     const latestUserOperationId = userSources.length===1?parseResultOperationId(userSources[0]):'';
     return {
       conversationKey: conversationKey(), chatMarkers:chatMarkers(recognized), replyMarker:parsedModel?.kind==='frame'?parsedModel.marker:'', chatAddress:/^\/(?:app\/)?prompts\/(?!new_chat\b|new\b)[^/]+\/?$/.test(location.pathname||'')?location.pathname:'', generating, controlsPending,
+      editingReply,
       editorEmpty: candidateEditors.length === 1 && editorValue(candidateEditors[0]) === '',
       supported: !error, error, modelError, latestModel: model ? { element: model, sourceError, sourceText:modelSource, sourceBlocks:blocks, sourceRemainder:remainder, recoveryRules:parsedModel?.recoveryRules||[], ...(recoveredReplies.has(model)?{responseIdentityText:recoveredReplies.get(model).identityText}:{}), renderedSource, sourceRevision:responseRevisions.get(model).revision, text:parsedModel.kind==='call'?'```helper-call\n'+parsedModel.raw+'\n```':modelSource } : null,
       latestUser: user ? { element: user, text: latestUserText, operationId: latestUserOperationId } : null,
@@ -336,7 +344,7 @@
   const stage = (value) => {
     const state = inspect();
     const candidateEditors = editors();
-    if (!state.supported || (state.generating && !(state.controlsPending && !state.latestModel)) || candidateEditors.length !== 1) return false;
+    if (!state.supported || state.editingReply || (state.generating && !(state.controlsPending && !state.latestModel)) || candidateEditors.length !== 1) return false;
     if (!state.editorEmpty) return ownedDraft?.value === String(value) && editorValue(candidateEditors[0]) === String(value);
     const staged = setEditorValue(candidateEditors[0],value);
     if (staged) ownedDraft = { value: String(value) };
@@ -364,7 +372,7 @@
     const promise = (async () => {
       for (let attempt = 0; attempt <= 60; attempt++) {
         const state = inspect(), currentEditors = editors();
-        if (!isCurrent() || !state.supported || (state.generating && !state.controlsPending) || currentEditors.length !== 1 || editorValue(currentEditors[0]) !== draft) return false;
+        if (!isCurrent() || !state.supported || state.editingReply || (state.generating && !state.controlsPending) || currentEditors.length !== 1 || editorValue(currentEditors[0]) !== draft) return false;
         const button = submitButton();
         if (button && !button.disabled && attr(button, 'aria-disabled') !== 'true') {
           if (!isCurrent() || ownedDraft?.value !== draft) return false;
@@ -466,7 +474,17 @@
     const alreadyOpen = panels();
     if (alreadyOpen.length === 1) panel = alreadyOpen[0];
     else if (!alreadyOpen.length) {
-      const openers = elements('button').filter(el => exactLabel(el, ['system instructions']));
+      let openers = elements('button').filter(el => exactLabel(el, ['system instructions']));
+      if(!openers.length){
+        const toggles=elements('button').filter(el=>exactLabel(el,['toggle run settings panel']));
+        if(toggles.length===1){
+          toggles[0].click();
+          for(let attempt=0;attempt<60&&!openers.length;attempt++){
+            await wait();
+            openers=elements('button').filter(el=>exactLabel(el,['system instructions']));
+          }
+        }
+      }
       if (openers.length !== 1) return fail(`System instructions opener not unique (count=${openers.length})`);
       const before = new Set(alreadyOpen);
       openers[0].click();
