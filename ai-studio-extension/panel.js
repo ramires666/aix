@@ -1,12 +1,18 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
-  const stateEl = $('status'), errorEl = $('error');
+  const errorEl = $('error');
   $('gate-connection').hidden = true;
   const installedVersion = chrome.runtime.getManifest?.().version || '';
-  if(installedVersion)$('extension-version').textContent='AI Studio · alpha '+installedVersion;
   let state = null, toolSignature = '', agentSignature = '', toolsInitialized = false;
-  let connecting = false;
+  let connecting = false, sessionChanging = false;
+  const permissionFields = {consent: 'consent', automatic: 'automatic', attachFiles: 'attach-files', autoApprove: 'auto-approve'};
+  function allPermissionsSelected() {
+    return [...$('tools').querySelectorAll('input'), ...Object.values(permissionFields).map($), $('hide-service')].every(input => input.checked);
+  }
+  function renderPermissionToggle() {
+    $('allow-all').textContent = allPermissionsSelected() ? 'Снять все галочки' : 'Разрешить всё';
+  }
   const edited = new Set();
   const editedPreferences = new Set();
   function saveConnection() {
@@ -52,20 +58,9 @@
     const previousError = state?.session?.error||state?.pageScript?.observerError;
     state = next;
     const session = next.session || {};
-    const phaseNames = { idle: 'ожидает запуска', ready: 'готов', arming: 'подготовка', attaching_files:'прикрепляются файлы', waiting_model: 'ожидается ответ модели', recovering: 'проверяется результат операции', result_ready: 'результат готов к передаче', active: 'выполняется', running: 'выполняется', waiting_approval: 'ожидает подтверждения', paused: 'на паузе', stopped: 'остановлен', delivery_uncertain: 'передача результата не подтверждена', error: 'ошибка' };
-    const connectionName = 'Локальный агент';
-    stateEl.textContent = `${session.demo || next.demoMode ? 'Демо режим · ' : ''}${connectionName} ${next.connected && next.transport !== 'gate' ? 'подключён' : 'не подключён'}${session.phase ? ` · сеанс: ${phaseNames[session.phase] || session.phase}` : ''}`;
-    $('transport-info').textContent = next.transport === 'local'
-      ? `Прямое соединение · агент ${next.agentVersion || 'версия не передана'}`
-      : next.localError ? `Локальный агент недоступен: ${next.localError}` : '';
-    $('transport-info').hidden = !$('transport-info').textContent;
-    const page=next.pageScript;
-    $('page-script').textContent=page
-      ? page.version&&(!installedVersion||page.version===installedVersion)&&(!page.lastSeen||Date.now()-page.lastSeen<10000)
-        ? `Скрипт вкладки AI Studio: ${page.version}`
-        : `Скрипт вкладки AI Studio: ${page.version||'прежняя версия'}. Перезагрузите сохранённую вкладку AI Studio.`
-      : next.connected?'Нет связи со скриптом вкладки AI Studio. Откройте AI Studio или перезагрузите сохранённую вкладку.':'';
-    $('page-script').hidden=!$('page-script').textContent;
+    const page = next.pageScript;
+    const agentVersion = next.connected && next.transport !== 'gate' ? next.agentVersion || 'версия не передана' : 'не подключён';
+    $('extension-version').textContent = `Скрипт ${page?.version || installedVersion || 'версия не передана'} · Агент ${agentVersion}`;
     const saved = next.autoSettings || {};
     const localAgents = next.transport === 'gate' ? [] : next.agents || [];
     renderChoices($('agents'), localAgents, 'agent');
@@ -96,17 +91,19 @@
     $('request-correction').disabled=!canRetry||!!rejected?.correctionRequested;
     $('hide-service').checked = !!next.hideServiceMessages;
     if (session.phase && !['idle', 'stopped'].includes(session.phase)) $('automatic').checked = !!session.automatic;
-    const autoStatus=typeof next.autoStatus==='string'?next.autoStatus:next.autoStatus?.message||'';
-    if(autoStatus&&(autoStatus!=='Готово'||!session.paused&&!session.error&&!session.notice&&!page?.observerError))stateEl.textContent+=' · '+autoStatus;
-    const observerLabels={attaching_files:'Прикрепляются файлы; ожидается подтверждение загрузки',unsupported:'Не удалось прочитать страницу',checking:'Проверяются инструкции чата',generating:'Модель формирует ответ',waiting_model:'Ожидается ответ модели',waiting_request:'Ожидается новый запрос; готовый вызов можно запустить кнопкой «Выполнить последний вызов»',settling:'Проверяется завершённость ответа',observing:'Проверяется готовый ответ',error:'Ошибка чтения ответа'};
-    $('observer-status').textContent=session.notice||observerLabels[page?.observerStatus]||'';
-    $('observer-status').hidden=!$('observer-status').textContent;
     const busy = connecting || next.connecting;
     $('connect').disabled = busy || (!!next.connected && next.transport !== 'local');
     $('connect').textContent = busy ? 'Ожидается вход…' : 'Подключить';
     $('disconnect').disabled = busy || !next.connected;
     $('demo').disabled = busy || !!next.connected;
-    $('arm').disabled = !next.connected || !['idle', 'stopped'].includes(session.phase) || !$('consent').checked;
+    const activeSession = !!session.phase && !['idle', 'stopped'].includes(session.phase);
+    const agent = (next.agents || []).find(item => String(item.id) === String(session.agentId));
+    const sessionConnected = activeSession && next.connected && next.transport !== 'gate' && agent?.online !== false;
+    const buttonVersion = next.agentVersion?.match(/^\d+\.\d+\.\d+/)?.[0] || next.agentVersion || 'версия не передана';
+    $('arm').textContent = activeSession ? `Агент ${buttonVersion} ${sessionConnected ? 'подключен' : 'отключён'}\nОтключить` : 'Запустить сеанс';
+    $('arm').className = sessionConnected ? 'session-connected' : 'session-disconnected';
+    $('arm').disabled = sessionChanging || (!activeSession && (!next.connected || !$('consent').checked));
+    renderPermissionToggle();
     $('tools-next-session').hidden = !session.phase || ['idle', 'stopped'].includes(session.phase);
     $('save-instructions').disabled = !next.connected || !session.agentId;
     $('approve').disabled = session.phase !== 'waiting_approval' || !session.pendingCall || session.paused;
@@ -142,11 +139,17 @@
   $('disconnect').addEventListener('click', () => act('bridge.disconnect'));
   $('demo').addEventListener('click', () => act('bridge.demo'));
   $('arm').addEventListener('click', async () => {
-    if (!$('consent').checked) return showError('Подтвердите передачу выбранных результатов.');
+    if (sessionChanging) return;
+    const activeSession = state?.session?.phase && !['idle', 'stopped'].includes(state.session.phase);
+    if (!activeSession && !$('consent').checked) return showError('Подтвердите передачу выбранных результатов.');
+    sessionChanging = true;
+    render(state);
     try {
+      if (activeSession) return await act('bridge.stop');
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       await act('bridge.arm', { tabId: tab?.id, agentId: selected($('agents'))[0], toolNames: selected($('tools')).filter(name => state.tools.some(tool => tool.name === name)), automatic: $('automatic').checked, autoApprove: $('auto-approve').checked, consent: true });
     } catch (error) { showError(error); }
+    finally { sessionChanging = false; render(state); }
   });
   $('save-instructions').addEventListener('click', () => act('bridge.instructions', { submit: false }));
   $('approve').addEventListener('click', () => act('bridge.approve'));
@@ -164,21 +167,26 @@
   $('run-from-reply').addEventListener('click', () => act('bridge.runFromReply'));
   $('stop').addEventListener('click', () => act('bridge.stop'));
   $('allow-all').addEventListener('click', async () => {
-    for(const input of $('tools').querySelectorAll('input'))input.checked=true;
-    const fields={consent:'consent',automatic:'automatic',attachFiles:'attach-files',autoApprove:'auto-approve'};
-    for(const [field,id] of Object.entries(fields)){
-      $(id).checked=true;editedPreferences.add(field);
+    if ($('allow-all').disabled) return;
+    const enabled = !allPermissionsSelected();
+    $('allow-all').disabled = true;
+    for(const input of $('tools').querySelectorAll('input'))input.checked=enabled;
+    for(const [field,id] of Object.entries(permissionFields)){
+      $(id).checked=enabled;editedPreferences.add(field);
     }
     editedPreferences.add('toolNames');
-    $('hide-service').checked=true;
-    const preferences={agentId:selected($('agents'))[0]||state?.autoSettings?.agentId||'',toolNames:selected($('tools')),consent:true,automatic:true,attachFiles:true,autoApprove:true};
-    if(state){state.autoSettings={...state.autoSettings,...preferences};if(state.session)state.session.automatic=true;}
+    $('hide-service').checked=enabled;
+    renderPermissionToggle();
+    const preferences={agentId:selected($('agents'))[0]||state?.autoSettings?.agentId||'',toolNames:selected($('tools')),consent:enabled,automatic:enabled,attachFiles:enabled,autoApprove:enabled};
+    if(state){state.autoSettings={...state.autoSettings,...preferences};if(state.session)state.session.automatic=enabled;}
     try{
       render(await send('bridge.preferences',preferences));
-      render(await send('bridge.cleanupPreference',{enabled:true}));
+      render(await send('bridge.cleanupPreference',{enabled}));
     }catch(error){showError(error);}
+    finally { $('allow-all').disabled = false; }
   });
   function savePreferences(field) {
+    renderPermissionToggle();
     editedPreferences.add(field);
     const savedTools = state?.autoSettings?.toolNames || [];
     const visibleTools = new Set([...$('tools').querySelectorAll('input')].map(input => input.value));
@@ -193,7 +201,7 @@
   $('automatic').addEventListener('change', () => { if (state?.session) state.session.automatic = $('automatic').checked; savePreferences('automatic'); });
   $('attach-files').addEventListener('change',()=>savePreferences('attachFiles'));
   $('auto-approve').addEventListener('change', () => savePreferences('autoApprove'));
-  $('hide-service').addEventListener('change', () => act('bridge.cleanupPreference', { enabled: $('hide-service').checked }));
+  $('hide-service').addEventListener('change', () => { renderPermissionToggle(); return act('bridge.cleanupPreference', { enabled: $('hide-service').checked }); });
   async function poll() { try { render(await send('bridge.status')); } catch (error) { showError(error); } }
   connectionLoaded.then(poll); setInterval(poll, 2000);
 })();

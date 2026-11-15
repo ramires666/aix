@@ -48,7 +48,8 @@ test('service JSON preference reflects state and sends both checkbox values', as
 test('quick controls follow the version and local agent while allow-all persists every checkbox',async()=>{
   const html=fs.readFileSync(require.resolve('./panel.html'),'utf8');
   assert.ok(html.indexOf('id="extension-version"')<html.indexOf('id="arm"'));
-  assert.ok(html.indexOf('id="arm"')<html.indexOf('id="status"'));
+  assert.ok(html.indexOf('id="arm"')<html.indexOf('id="error"'));
+  for(const id of ['status','transport-info','page-script','observer-status'])assert.equal(html.includes(`id="${id}"`),false);
   assert.ok(html.indexOf('id="agents"')<html.indexOf('id="allow-all"'));
   assert.ok(html.indexOf('id="allow-all"')<html.indexOf('id="tools"'));
   assert.equal((html.match(/id="arm"/g)||[]).length,1);
@@ -90,14 +91,12 @@ test('native-file delivery defaults on and its preference is preserved across po
   await p.update({connected:true,session:{phase:'waiting_model'},autoSettings:{attachFiles:false},tools:[],agents:[]});assert.equal(p.get('attach-files').checked,false);
 });
 
-test('shows the actual installed version and identifies an older script still running in the tab',async()=>{
+test('header shows only the actual script and connected agent versions',async()=>{
   const p=createPanel({}, {manifestVersion:'0.3.2'});
   await p.update({connected:true,session:{phase:'waiting_model'},pageScript:{version:'0.3.1'},tools:[],agents:[]});
-  assert.match(p.get('extension-version').textContent,/0\.3\.2/);
-  assert.match(p.get('page-script').textContent,/0\.3\.1.*Перезагрузите/);
+  assert.equal(p.get('extension-version').textContent,'Скрипт 0.3.1 · Агент версия не передана');
   await p.update({connected:true,session:{phase:'waiting_model'},pageScript:{version:'0.3.2'},tools:[],agents:[]});
-  assert.match(p.get('page-script').textContent,/0\.3\.2/);
-  assert.doesNotMatch(p.get('page-script').textContent,/Перезагрузите/);
+  assert.equal(p.get('extension-version').textContent,'Скрипт 0.3.2 · Агент версия не передана');
 });
 
 test('resuming clears a resolved session error from the panel', async () => {
@@ -148,7 +147,7 @@ test('demo label and session controls follow phase safety', async () => {
   const p = createPanel();
   const base = { connected: true, demoMode: true, tools: [], agents: [] };
   await p.update({ ...base, session: { phase: 'paused', paused: true, resumeBlocked: true, resultText: 'text' } });
-  assert.match(p.get('status').textContent, /Демо режим/);
+  assert.equal(p.get('arm').disabled, false);
   assert.equal(p.get('resume').disabled, true);
   assert.equal(p.get('deliver').disabled, true);
   assert.equal(p.get('pause').disabled, true);
@@ -173,17 +172,17 @@ test('paused or failed sessions never also claim readiness',async()=>{
   const p=createPanel();
   for(const session of [{phase:'paused',paused:true,error:'Ambiguous or damaged Helper file delimiters'},{phase:'waiting_model',error:'failed'}]){
     await p.update({connected:true,autoStatus:'Готово',session,tools:[],agents:[]});
-    assert.doesNotMatch(p.get('state').textContent,/Готово/);
+    assert.equal(p.get('error').textContent,session.error);
   }
 });
 
 test('the panel exposes observer failures and correction progress instead of readiness',async()=>{
   const p=createPanel();
   await p.update({connected:true,autoStatus:'Готово',session:{phase:'waiting_model'},pageScript:{observerStatus:'error',observerError:'DOM failure'}});
-  assert.equal(p.get('error').textContent,'DOM failure');assert.doesNotMatch(p.get('status').textContent,/Готово/);
+  assert.equal(p.get('error').textContent,'DOM failure');assert.equal(p.get('arm').disabled,false);
   await p.update({connected:true,autoStatus:'Готово',session:{phase:'waiting_model',notice:'Ожидается исправление'},pageScript:{observerStatus:'waiting_model'}});
-  assert.equal(p.get('error').hidden,true);assert.equal(p.get('observer-status').textContent,'Ожидается исправление');
-  assert.doesNotMatch(p.get('status').textContent,/Готово/);
+  assert.equal(p.get('error').hidden,true);
+  assert.equal(p.get('arm').disabled,false);
 });
 
 test('connection inputs persist across panel reopen and a failed connection', async () => {
@@ -226,7 +225,7 @@ test('saved agent and preferences restore on reopen, and polls preserve edits', 
   const reopened = createPanel(store); await reopened.update({ ...base, autoSettings: store.autoSettings });
   assert.equal(reopened.get('agents').querySelectorAll('input:checked')[0].value, 'agent-2');
   assert.equal(reopened.get('consent').checked, false);
-  assert.match(reopened.get('status').textContent, /ready/);
+  assert.equal(reopened.get('arm').textContent, 'Запустить сеанс');
 });
 
 test('remembered tools appear selected when tool metadata arrives after an offline poll', async () => {
@@ -314,11 +313,10 @@ test('local connection shows the received agent version with Gate configuration 
   const p = createPanel();
   await p.ready();
   await p.update({ connected: true, transport: 'local', agentVersion: 'received-version', session: { phase: 'idle' }, tools: [], agents: [] });
-  assert.match(p.get('status').textContent, /Локальный агент подключён/);
-  assert.match(p.get('transport-info').textContent, /received-version/);
+  assert.match(p.get('extension-version').textContent, /Агент received-version/);
   assert.equal(p.get('connect').disabled, false);
   assert.equal(p.get('gate-connection').hidden, true);
-  assert.doesNotMatch(p.get('transport-info').textContent, /Gate/);
+  assert.doesNotMatch(p.get('extension-version').textContent, /Gate/);
   assert.equal(p.get('connect').textContent, 'Подключить');
   await p.input('gate-url', 'https://gate.example');
   await p.click('connect');
@@ -373,5 +371,50 @@ test('Gate connection fields stay hidden and remote agents are absent from local
   const panel=createPanel();
   await panel.update({connected:true,transport:'gate',gateUrl:'https://gate.example',session:{phase:'idle'},agents:[{id:'remote',name:'Gate agent'}],tools:[]});
   assert.equal(panel.get('gate-connection').hidden,true);assert.equal(panel.get('agents').hidden,true);
-  assert.equal(panel.get('agents').querySelectorAll('input').length,0);assert.doesNotMatch(panel.get('status').textContent,/Gate/);
+  assert.equal(panel.get('agents').querySelectorAll('input').length,0);assert.doesNotMatch(panel.get('extension-version').textContent,/Gate/);
+});
+
+
+test('session button starts, disconnects even without consent, and reflects a lost connection', async () => {
+  const panel = createPanel();
+  const base = {connected:true, transport:'local', agentVersion:'1.5.0-ai-studio-alpha.8', agents:[{id:'local',online:true}], tools:[{name:'read_file'}], autoSettings:{agentId:'local',consent:true,toolNames:['read_file']}};
+  await panel.update({...base,session:{phase:'idle'}});
+  assert.equal(panel.get('arm').textContent,'Запустить сеанс');
+  assert.equal(panel.get('arm').className,'session-disconnected');
+  await panel.click('arm');
+  assert.equal(panel.messages.at(-1).type,'bridge.arm');
+  await panel.update({...base,session:{phase:'waiting_model',agentId:'local'}});
+  assert.equal(panel.get('arm').textContent,'Агент 1.5.0 подключен\nОтключить');
+  assert.equal(panel.get('arm').className,'session-connected');
+  await panel.update({...base,connected:false,autoSettings:{consent:false},session:{phase:'paused',agentId:'local'}});
+  assert.equal(panel.get('arm').className,'session-disconnected');
+  assert.equal(panel.get('arm').disabled,false);
+  await panel.click('arm');
+  assert.equal(panel.messages.at(-1).type,'bridge.stop');
+  await panel.update({...base,session:{phase:'stopped'}});
+  assert.equal(panel.get('arm').textContent,'Запустить сеанс');
+  assert.equal(panel.get('arm').className,'session-disconnected');
+  await panel.update({...base,agents:[{id:'local',online:false}],session:{phase:'waiting_model',agentId:'local'}});
+  assert.equal(panel.get('arm').className,'session-disconnected');
+});
+
+test('permission toggle clears every checkbox and updates after individual edits and polls', async () => {
+  const panel = createPanel();
+  await panel.update({connected:true,session:{phase:'waiting_model',automatic:false},tools:[{name:'read_file'},{name:'write_file'}],autoSettings:{consent:false}});
+  await panel.click('allow-all');
+  assert.equal(panel.get('allow-all').textContent,'Снять все галочки');
+  await panel.click('allow-all');
+  for(const id of ['consent','automatic','attach-files','auto-approve','hide-service'])assert.equal(panel.get(id).checked,false,id);
+  assert.equal(panel.get('tools').querySelectorAll('input').some(input=>input.checked),false);
+  assert.equal(panel.get('allow-all').textContent,'Разрешить всё');
+  const preferences = panel.messages.filter(message=>message.type==='bridge.preferences').at(-1);
+  for(const key of ['consent','automatic','attachFiles','autoApprove'])assert.equal(preferences[key],false);
+  assert.equal(preferences.toolNames.length,0);
+  await panel.ready();
+  assert.equal(panel.get('allow-all').textContent,'Разрешить всё');
+  await panel.click('allow-all');
+  await panel.change('attach-files',false);
+  assert.equal(panel.get('allow-all').textContent,'Разрешить всё');
+  await panel.click('allow-all');
+  assert.equal(panel.get('allow-all').textContent,'Снять все галочки');
 });

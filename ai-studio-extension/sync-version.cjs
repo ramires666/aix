@@ -26,4 +26,4 @@ stamp('content.js',/const contentVersion='[^']*'/,"const contentVersion='"+versi
 stamp('local-client.js',/version = '[^']*'/,"version = '"+version+"'");
 stamp('native-client.js',/version = '[^']*'/,"version = '"+version+"'");
 stamp('mcp-client.js',/clientInfo: \{ name: 'WebCodex AI Studio Bridge', version: '[^']*' \}/,"clientInfo: { name: 'WebCodex AI Studio Bridge', version: '"+version+"' }");
-stamp('panel.html',/AI Studio · alpha \d+\.\d+\.\d+/, 'AI Studio · alpha '+version);
+stamp('panel.html',/Скрипт \d+\.\d+\.\d+/, 'Скрипт '+version);
