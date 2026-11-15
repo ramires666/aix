@@ -142,7 +142,7 @@
     if (!$('consent').checked) return showError('Подтвердите передачу выбранных результатов.');
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      await act('bridge.arm', { tabId: tab?.id, agentId: selected($('agents'))[0], toolNames: selected($('tools')), automatic: $('automatic').checked, autoApprove: $('auto-approve').checked, consent: true });
+      await act('bridge.arm', { tabId: tab?.id, agentId: selected($('agents'))[0], toolNames: selected($('tools')).filter(name => state.tools.some(tool => tool.name === name)), automatic: $('automatic').checked, autoApprove: $('auto-approve').checked, consent: true });
     } catch (error) { showError(error); }
   });
   $('save-instructions').addEventListener('click', () => act('bridge.instructions', { submit: false }));

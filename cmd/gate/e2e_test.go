@@ -25,6 +25,7 @@ func TestRealGateAndLocalExecutorEndToEnd(t *testing.T) {
 	}
 	srv, cleanup := setupTestServer(t)
 	defer cleanup()
+	srv.timeout = 15 * time.Second // Cold PowerShell startup on CI can exceed the unit-test timeout.
 	root := t.TempDir()
 	root, err := filepath.EvalSymlinks(root)
 	if err != nil {

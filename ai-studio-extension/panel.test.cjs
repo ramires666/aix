@@ -328,3 +328,15 @@ test('file recovery has an explicit action and is blocked while an operation is 
  await p.click('save-from-reply');assert.equal(p.messages.at(-1).type,'bridge.saveFromReply');
  await p.update({...snapshot,session:{...snapshot.session,operationKey:'pending'}});assert.equal(p.get('save-from-reply').disabled,true);
 });
+
+
+test('arming Gate intersects remembered tool choices with its currently available tools',async()=>{
+  const remembered=Array.from({length:14},(_,index)=>'tool_'+index),available=remembered.slice(0,6);
+  const panel=createPanel({autoSettings:{agentId:'remote',toolNames:remembered,consent:true,automatic:true,autoApprove:true}});
+  await panel.update({connected:true,transport:'gate',session:{phase:'idle'},autoSettings:{agentId:'remote',toolNames:remembered,consent:true,automatic:true,autoApprove:true},agents:[{id:'remote',name:'Gate agent',online:true}],tools:available.map(name=>({name}))});
+  assert.equal(panel.get('tools').querySelectorAll('input:checked').length,14);
+  await panel.click('arm');
+  const request=panel.messages.find(message=>message.type==='bridge.arm');
+  assert.deepEqual(Array.from(request.toolNames),available);assert.equal(request.consent,true);assert.equal(request.automatic,true);assert.equal(request.autoApprove,true);
+  assert.equal(panel.get('tools').querySelectorAll('input:checked').length,14);
+});

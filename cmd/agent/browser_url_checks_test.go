@@ -56,7 +56,10 @@ func TestBrowserURLChecksBoundedCapacityFailsClosed(t *testing.T) {
 	started := make(chan struct{}, browserURLCheckWorkers)
 	release := make(chan struct{})
 	checks := newBrowserURLChecks(func(ctx context.Context, _ string) bool {
-		started <- struct{}{}
+		select {
+		case started <- struct{}{}:
+		default:
+		} // Queued jobs must not block shutdown after the test stops draining started.
 		select {
 		case <-release:
 			return true

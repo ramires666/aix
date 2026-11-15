@@ -323,3 +323,13 @@ test('lost Gate recovery POST looks up the original ID and pinned route on the n
   const second=await recoverOnce(h);assert.equal(second.phase,'result_ready');assert.equal(second.operationId,'original-gate-id');
   assert.deepEqual(requests,[['lookup','original-gate-id'],['create','saved-key'],['lookup','original-gate-id']]);assert.equal(h.calls.local,0);
 });
+
+
+test('Gate fallback setup selects Gate when the saved local connection is disconnected',async()=>{
+  const h=harness({localAvailable:false,oauthSuccess:true,session:{transport:'local',session:{phase:'waiting_model',transport:'local',agentId:'local',toolNames:['read_file'],paused:false,tabId:1,sessionId:'stale-local',pendingCall:null}}});
+  await message(h,{type:'bridge.status'});
+  const result=await message(h,{type:'bridge.connect',configureGate:true,gateUrl:'https://gate.example',clientId:'client'});
+  assert.equal(result.ok,true,result.error);assert.equal(result.state.connected,true);assert.equal(result.state.transport,'gate');
+  assert.equal(result.state.session.phase,'idle');assert.notEqual(result.state.session.sessionId,'stale-local');
+  assert.equal(h.localStore.bridgeAuth.accessToken,'new-token');assert.equal(result.state.agents[0].id,'remote');
+});
