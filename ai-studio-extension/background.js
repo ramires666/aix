@@ -217,6 +217,14 @@ async function command(m) {
   if(restoreError){if(m.type==='bridge.status')return publicState();throw Error(restoreError);}
   switch(m.type) {
     case 'bridge.status': await refreshForAutoStart(state.autoSettings);await migrateAutoSetup();updateAutoStatus();return publicState();
+    case 'bridge.collapseChat': {
+      if(!Number.isInteger(m.tabId))throw Error('Откройте вкладку Google AI Studio');
+      const tab=await chrome.tabs.get(m.tabId);
+      if(new URL(tab.url||'').origin!=='https://aistudio.google.com')throw Error('Откройте вкладку Google AI Studio');
+      const result=await chrome.tabs.sendMessage(m.tabId,{type:'studio.collapseChat'});
+      if(!result?.ok)throw Error(result?.error||'Обновите вкладку AI Studio и повторите');
+      break;
+    }
     case 'bridge.cleanupPreference':
       state.hideServiceMessages=!!m.enabled;
       await chrome.storage.local.set({hideServiceMessages:state.hideServiceMessages});

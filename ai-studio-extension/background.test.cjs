@@ -8,20 +8,38 @@ const WebCodexMCP=require('./mcp-client.js');
 
 function harness(stored={}, failInitialize=false, localStore={}, clientOverride=null) {
   if (!Object.hasOwn(localStore,'bridgeAutoSetupV1')) localStore.bridgeAutoSetupV1=true;
-  const listeners={};const data={...stored};const sent=[];
+  const listeners={};const data={...stored};const sent=[],tabMessages=[];
   const event=()=>({addListener:fn=>{listeners[fn.name||Math.random()]=fn;}});
   const chrome={runtime:{id:'test-id',getURL:p=>'chrome-extension://test-id/'+p,onMessage:{addListener(fn){listeners.message=fn;}}},
     storage:{session:{setAccessLevel:async x=>sent.push(['session-access',x]),get:async k=>({[k]:data[k]}),set:async x=>Object.assign(data,x)},local:{get:async k=>({[k]:localStore[k]}),set:async x=>Object.assign(localStore,x),remove:async k=>{delete localStore[k];},setAccessLevel:async x=>sent.push(['local-access',x])}},
     action:{onClicked:{addListener(fn){listeners.click=fn;}}},sidePanel:{open:async()=>{}},alarms:{create(){},onAlarm:{addListener(){}}},
-    permissions:{contains:async()=>true},tabs:{get:async()=>({url:'https://aistudio.google.com/app/prompts/abc'}),sendMessage:async()=>({supported:true,conversationKey:'c',ok:true})},
+    permissions:{contains:async()=>true},tabs:{get:async()=>({url:'https://aistudio.google.com/app/prompts/abc'}),sendMessage:async(...args)=>{tabMessages.push(args);return{supported:true,conversationKey:'c',ok:true};}},
     identity:{getRedirectURL:()=> 'https://test.chromiumapp.org/webcodex',launchWebAuthFlow:async()=>''}};
   const context={chrome,crypto:require('node:crypto').webcrypto,URL,URLSearchParams,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,JSON,Promise,Set,Map,Date,AbortSignal,Math,Error,String,Object,Number,RegExp,console,btoa:s=>Buffer.from(s,'binary').toString('base64'),fetch:async()=>{throw Error('fetch unexpected')},
     WebCodexProtocol, WebCodexSession:require('./session-state.js'), WebCodexAttachments:require('./attachments.js'),WebCodexMCP:clientOverride|| (failInitialize?{createClient:()=>({initialize:async()=>{throw Error('expired')}})}:WebCodexMCP),importScripts(){},setTimeout,clearTimeout};
   // Keep exercising the retained remote implementation while this release is local-only.
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'background.js'),'utf8').replace('const GATE_ENABLED = false;','const GATE_ENABLED = true;'),context,{filename:'background.js'});
-  return {listeners,data,sent,chrome};
+  return {listeners,data,sent,chrome,tabMessages};
 }
 function message(h,msg,sender){return new Promise(resolve=>{const async=h.listeners.message(msg,sender,resolve);if(async!==true)resolve(undefined);});}
+test('chat folding targets a selected AI Studio tab while disconnected and idle',async()=>{
+  const h=harness(),panel={url:'chrome-extension://test-id/panel.html'};
+  const reply=await message(h,{type:'bridge.collapseChat',tabId:7},panel);
+  assert.equal(reply.ok,true);
+  assert.deepEqual(h.tabMessages.map(([id,msg])=>[id,msg.type]),[[7,'studio.collapseChat']]);
+  assert.equal(h.data.webcodexState.session.phase,'idle');
+  assert.equal(h.data.webcodexState.connected,false);
+  assert.equal(h.tabMessages.some(([,msg])=>/call|arm|deliver|stage/i.test(msg.type)),false);
+});
+test('chat folding rejects non-Studio origins and malformed tab IDs',async()=>{
+  const h=harness(),panel={url:'chrome-extension://test-id/panel.html'};
+  h.chrome.tabs.get=async()=>({url:'https://example.com/'});
+  const wrongOrigin=await message(h,{type:'bridge.collapseChat',tabId:7},panel);
+  assert.equal(wrongOrigin.ok,false);assert.match(wrongOrigin.error,/Google AI Studio/);
+  const badTab=await message(h,{type:'bridge.collapseChat',tabId:'7'},panel);
+  assert.equal(badTab.ok,false);assert.match(badTab.error,/Google AI Studio/);
+  assert.equal(h.tabMessages.length,0);
+});
 test('browser restart restores only credentials, refreshes tools and never starts a chat',async()=>{
   const auto={enabled:true,agentId:'a',toolNames:['read_file'],automatic:true,autoApprove:false,consent:true};
   const localStore={bridgeAuth:{gateUrl:'https://gate.example',clientId:'client',accessToken:'saved-secret'},bridgeAuto:auto};

@@ -52,6 +52,7 @@ test('quick controls follow the version and local agent while allow-all persists
   assert.ok(html.indexOf('id="arm"')<html.indexOf('id="error"'));
   for(const id of ['status','transport-info','page-script','observer-status'])assert.equal(html.includes(`id="${id}"`),false);
   assert.ok(html.indexOf('id="agents"')<html.indexOf('id="allow-all"'));
+  assert.match(html, /<div class="row">\s*<button id="allow-all"[^>]*>Разрешить всё<\/button>\s*<button id="collapse-chat"[^>]*>Свернуть чат хелпера<\/button>\s*<\/div>/);
   assert.ok(html.indexOf('id="allow-all"')<html.indexOf('id="tools"'));
   assert.equal((html.match(/id="arm"/g)||[]).length,1);
   const panel=createPanel();
@@ -74,6 +75,14 @@ test('resume identifies the currently selected tab for saved-chat recovery',asyn
   await panel.click('resume');
   assert.equal(panel.messages.at(-1).type,'bridge.resume');
   assert.equal(panel.messages.at(-1).tabId,1);
+});
+
+test('collapse chat dispatches for the active tab while disconnected',async()=>{
+  const panel=createPanel();
+  await panel.click('collapse-chat');
+  assert.equal(panel.messages.at(-1).type,'bridge.collapseChat');
+  assert.equal(panel.messages.at(-1).tabId,1);
+  assert.equal(panel.get('error').hidden,true);
 });
 
 test('uncertain delivery offers a read-only check while execution uncertainty stays blocked',async()=>{

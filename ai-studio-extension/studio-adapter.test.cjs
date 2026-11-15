@@ -976,3 +976,43 @@ test('waits through transient Run removal and rejects competing or stale submits
   assert.equal(await stale.adapter.submit('never stage', () => false), false);
   assert.equal(stale.editor.value, '');
 });
+
+
+test('saved Helper history folds in both directions and manual collapse can fold reopened blocks',()=>{
+  const state=setup();state.chunk.remove();state.model.children=[];state.model.attrs['data-turn-role']='Model';
+  const widget=state.model.add(new Node('ms-code-block'));
+  const callButton=widget.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const callRegion=widget.add(new Node('div'));
+  callRegion.add(new Node('pre',{},'HELPER_history read_file\npath: notes.txt\nEND_history'));
+  callButton.click=()=>{callButton.attrs['aria-label']='Expand code snippet';callRegion.attrs.style='display:none';};
+  const plain=state.model.add(new Node('p',{},'Обычное пояснение остаётся видно'));
+  assert.equal(state.adapter.collapseChat(),0,'a pending call is handled only after acceptance');
+  const result=state.root.add(new Node('ms-chat-turn',{'data-turn-role':'User'}));
+  const resultWidget=result.add(new Node('ms-code-block'));
+  const resultButton=resultWidget.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const resultRegion=resultWidget.add(new Node('div'));
+  resultRegion.add(new Node('pre',{},JSON.stringify({type:'helper-result',operation_id:'old-result',name:'read_file',result:'bytes'})));
+  resultButton.click=()=>{resultButton.attrs['aria-label']='Expand code snippet';resultRegion.attrs.style='display:none';};
+  callButton.attrs['aria-label']='';resultButton.attrs['aria-label']='';
+  assert.equal(state.adapter.collapseChat(),0,'waits for native controls to hydrate');
+  callButton.attrs['aria-label']='Collapse code snippet';resultButton.attrs['aria-label']='Collapse code snippet';
+  assert.equal(state.adapter.collapseChat(),2);
+  assert.equal(callButton.attrs['aria-label'],'Expand code snippet');
+  assert.equal(resultButton.attrs['aria-label'],'Expand code snippet');
+  assert.notEqual(plain.hidden,true);
+  assert.equal(state.adapter.inspect().latestUser.operationId,'old-result');
+  assert.equal(state.adapter.collapseChat(),0);
+  callButton.attrs['aria-label']='Collapse code snippet';delete callRegion.attrs.style;
+  resultButton.attrs['aria-label']='Collapse code snippet';delete resultRegion.attrs.style;
+  assert.equal(state.adapter.collapseChat(),0,'automatic scan respects manual expansion');
+  assert.equal(state.adapter.collapseChat({force:true}),2,'button deliberately folds reopened service blocks');
+});
+
+test('manual history collapse leaves ordinary dialogue and Helper examples without agent context expanded',()=>{
+  const state=setup();state.chunk.remove();state.model.children=[];state.model.attrs['data-turn-role']='Model';
+  const widget=state.model.add(new Node('ms-code-block'));
+  const button=widget.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  widget.add(new Node('pre',{},JSON.stringify({v:1,name:'read_file',arguments:{path:'example.txt'}})));
+  assert.equal(state.adapter.collapseChat({force:true}),0);
+  assert.equal(button.clicked,undefined);
+});

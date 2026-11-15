@@ -602,9 +602,7 @@
     });
   };
   const hasDelivery = (operationId, expectedText) => deliveryTurns(operationId, expectedText).length > 0;
-  const collapseCall = expected => {
-    const current=inspect(),model=current.latestModel;
-    if(!model||model.element!==expected?.element||model.sourceRevision!==expected.sourceRevision||model.text!==expected.text)return false;
+  const collapseModelSources = (model,force=false) => {
     let accepted=protocol.analyzeReply(model.sourceText??model.text);
     if(accepted.kind!=='call'&&accepted.kind!=='frame'){
       const recovered=[];
@@ -615,7 +613,7 @@
         }
       }
       const unique=[...new Map(recovered.map(parsed=>[JSON.stringify([parsed.call,parsed.fileSource]),parsed])).values()];
-      if(unique.length!==1)return false;
+      if(unique.length!==1)return 0;
       accepted=unique[0];
     }
     const matchesAccepted=raw=>{
@@ -644,10 +642,10 @@
         }
       }
     }
-    if(!matchingBlocks.length)return false;
+    if(!matchingBlocks.length)return 0;
     const matches=[];
     for(const widget of allElements('ms-code-block',model.element)){
-      if(collapsedHelperWidgets.has(widget))continue;
+      if(!force&&collapsedHelperWidgets.has(widget))continue;
       const buttons=elements('button',widget).filter(button=>hasLabel(button,['collapse code snippet']));
       if(buttons.length!==1)continue;
       for(const root of sourceRoots(answerCopy(widget))){
@@ -658,7 +656,7 @@
       }
     }
     const widgets=new Map(matches.map(match=>[match.widget,match]));
-    if(widgets.size!==matchingBlocks.length)return false;
+    if(widgets.size!==matchingBlocks.length)return 0;
     for(const {widget,button,source} of widgets.values()){
       collapsedHelperSources.set(widget,new Map([[source,codeText(source)]]));
       for(let node=source;node;node=node.parentElement||node.parent){
@@ -677,7 +675,12 @@
       }
       collapsedHelperWidgets.add(widget);
     }
-    return true;
+    return widgets.size;
+  };
+  const collapseCall = expected => {
+    const model=inspect().latestModel;
+    if(!model||model.element!==expected?.element||model.sourceRevision!==expected.sourceRevision||model.text!==expected.text)return false;
+    return collapseModelSources(model)>0;
   };
   const collapsedDeliveries=new WeakSet();
   const collapseDelivery = (operationId, expectedText) => {
@@ -687,6 +690,40 @@
       const buttons=elements('button',turn).filter(button=>hasLabel(button,['collapse code snippet']));
       if(buttons.length!==1)continue;
       buttons[0].click();collapsedDeliveries.add(turn);count++;
+    }
+    return count;
+  };
+  const collapsedHistory=new WeakMap();
+  const collapseChat = ({force=false}={}) => {
+    const recognized=turns();
+    const resultFor=turn=>{
+      if(!turn||role(turn)!=='user')return null;
+      const sources=resultSources(turn);
+      if(sources.length!==1)return null;
+      try{
+        const result=JSON.parse(stripUserHeader(sources[0]));
+        return protocol.isResult(result)&&typeof result.operation_id==='string'&&result.operation_id?result:null;
+      }catch{return null;}
+    };
+    const helperChat=force&&(chatMarkers(recognized).length>0||recognized.some(turn=>resultFor(turn)));
+    let count=0;
+    for(let index=0;index<recognized.length;index++){
+      const turn=recognized[index];
+      const following=role(turn)==='model'?recognized[index+1]:null;
+      const buttons=allElements('button',turn).map(button=>[sourceID(button),attr(button,'aria-label'),attr(button,'title'),button.textContent]);
+      const signature=JSON.stringify([role(turn),turn.textContent||'',following?.textContent||'',allElements('ms-code-block',turn).map(sourceID),buttons]);
+      if(!force&&collapsedHistory.get(turn)===signature)continue;
+      const result=resultFor(turn);
+      if(result){
+        if(force)collapsedDeliveries.delete(turn);
+        count+=collapseDelivery(result.operation_id);
+      }else if(role(turn)==='model'&&(force?helperChat:!!resultFor(recognized[index+1]))){
+        const {blocks}=sourceBlocks(answerCopy(turn));
+        for(const block of blocks){
+          count+=collapseModelSources({element:turn,sourceBlocks:blocks,sourceText:block.text},force);
+        }
+      }
+      collapsedHistory.set(turn,signature);
     }
     return count;
   };
@@ -737,5 +774,5 @@
     return count;
   };
   if(document.querySelectorAll?.('[data-webcodex-context]').length)annotateContext();
-  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, collapseDelivery, collapseCall, cleanup, restoreCleanup, annotateContext };
+  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, collapseDelivery, collapseCall, collapseChat, cleanup, restoreCleanup, annotateContext };
 });

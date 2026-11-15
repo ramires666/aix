@@ -200,7 +200,7 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   answer.replaceChildren();
   const dialogue=document.createElement('p');dialogue.textContent='I will check this carefully.';
   const helperWidget=document.createElement('ms-code-block'),helperButton=document.createElement('button'),helperRegion=document.createElement('div'),helperCode=document.createElement('pre');
-  const helperMarker='b'.repeat(32),helperRaw='HELPER_'+helperMarker+' read_file\npath: notes.txt\nEND_'+helperMarker;
+  const helperMarker='b'.repeat(32),helperRaw='HELPER_'+helperMarker+' read_file\\npath: notes.txt\\nEND_'+helperMarker;
   helperButton.setAttribute('aria-label','Collapse code snippet');helperCode.textContent=helperRaw;helperRegion.append(helperCode);helperWidget.append(helperButton,helperRegion);
   const exampleWidget=document.createElement('ms-code-block'),exampleButton=document.createElement('button'),exampleCode=document.createElement('pre');
   exampleButton.setAttribute('aria-label','Collapse code snippet');exampleCode.textContent='Example only: '+helperRaw;exampleWidget.append(exampleButton,exampleCode);
@@ -213,6 +213,19 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   if(adapter.collapseCall(helperBefore))throw Error('Helper source was clicked twice after native collapse');
   helperButton.click();helperButton.setAttribute('aria-label','Collapse code snippet');helperRegion.removeAttribute('aria-hidden');helperRegion.style.display='';
   if(adapter.collapseCall(helperBefore)||helperButton.getAttribute('aria-label')!=='Collapse code snippet')throw Error('manual Helper expansion was automatically collapsed');cases++;
+  const historyResult=document.createElement('ms-chat-turn');historyResult.setAttribute('data-turn-role','User');
+  const historyWidget=document.createElement('ms-code-block'),historyButton=document.createElement('button'),historyRegion=document.createElement('div');
+  historyButton.setAttribute('aria-label','Collapse code snippet');
+  const historyCode=document.createElement('pre');historyCode.textContent=JSON.stringify({type:'helper-result',operation_id:'saved-history',name:'read_file',result:'saved bytes'});
+  historyRegion.append(historyCode);historyWidget.append(historyButton,historyRegion);historyResult.append(historyWidget);document.body.append(historyResult);
+  historyButton.addEventListener('click',()=>{historyButton.setAttribute('aria-label','Expand code snippet');historyRegion.style.display='none';});
+  const refreshedAdapter=WebCodexStudio.createAdapter(document,{hostname:'aistudio.google.com'});
+  if(refreshedAdapter.collapseChat()!==2||helperButton.getAttribute('aria-label')!=='Expand code snippet'||historyButton.getAttribute('aria-label')!=='Expand code snippet')throw Error('saved chat did not fold in both directions after reload');
+  if(refreshedAdapter.inspect().latestUser.operationId!=='saved-history'||exampleButton.getAttribute('aria-label')!=='Collapse code snippet')throw Error('history folding changed delivery proof or ordinary code');
+  helperButton.setAttribute('aria-label','Collapse code snippet');helperRegion.removeAttribute('aria-hidden');helperRegion.style.display='';
+  historyButton.setAttribute('aria-label','Collapse code snippet');historyRegion.style.display='';
+  if(refreshedAdapter.collapseChat()!==0||refreshedAdapter.collapseChat({force:true})!==2)throw Error('manual history folding failed or automatic scan undid manual expansion');cases++;
+  historyResult.remove();
   const ownDraft=document.querySelector('textarea').value;let preserved=false;
   document.addEventListener('click',event=>{if(event.target===run){adapter.prepareSessionMessage(liveMarker);preserved=document.querySelector('textarea').value===ownDraft;}},true);
   if(!await adapter.submit(ownDraft)||!preserved)throw Error('Run capture modified the owned result');cases++;
@@ -220,6 +233,9 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
 } catch(error) {document.getElementById('check').textContent='FAIL:'+error.message;}
 })();
 </script>`,'utf8');
+  const inline=/<script>([\s\S]*?)<\/script>/.exec(fs.readFileSync(fixture,'utf8'))?.[1];
+  assert.ok(inline,'browser fixture script is required');
+  new (require('node:vm').Script)(inline);
   const child=spawn(executable,['--headless','--disable-gpu','--no-first-run','--no-default-browser-check','--disable-background-networking','--virtual-time-budget=3000','--user-data-dir='+path.join(temp,'profile'),'--dump-dom',pathToFileURL(fixture).href],{windowsHide:true,stdio:['ignore','pipe','ignore']});
   t.after(()=>{
     if(child.exitCode===null&&child.signalCode===null)child.kill();
@@ -230,5 +246,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:99',output.slice(-3000));t.diagnostic('99 scenarios passed in installed Chrome, including accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
+  assert.equal(result,'PASS:100',output.slice(-3000));t.diagnostic('100 scenarios passed in installed Chrome, including accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });

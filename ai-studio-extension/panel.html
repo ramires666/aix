@@ -11,7 +11,7 @@
   <main>
     <header>
       <h1>WebCodex Bridge</h1>
-      <p id="extension-version">Скрипт 0.5.3 · Агент не подключён</p>
+      <p id="extension-version">Скрипт 0.5.4 · Агент не подключён</p>
       <div class="row"><button id="arm" type="button">Запустить сеанс</button></div>
     </header>
     <p id="error" class="error" role="alert" aria-live="assertive" hidden></p>
@@ -36,7 +36,10 @@
       <h2 id="session-heading">Сеанс</h2>
       <p>Локальный агент</p>
       <div id="agents" class="choices" aria-label="Выбор агента"></div>
-      <button id="allow-all" type="button">Разрешить всё</button>
+      <div class="row">
+        <button id="allow-all" type="button">Разрешить всё</button>
+        <button id="collapse-chat" type="button" class="secondary">Свернуть чат хелпера</button>
+      </div>
       <p>Разрешённые инструменты</p>
       <div id="tools" class="choices" aria-label="Разрешённые инструменты"></div>
       <p id="tools-next-session" class="hint" hidden>Выбор инструментов применяется к следующему сеансу.</p>

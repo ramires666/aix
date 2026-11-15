@@ -166,6 +166,12 @@
   $('save-from-reply').addEventListener('click', () => act('bridge.saveFromReply'));
   $('run-from-reply').addEventListener('click', () => act('bridge.runFromReply'));
   $('stop').addEventListener('click', () => act('bridge.stop'));
+  $('collapse-chat').addEventListener('click', async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await act('bridge.collapseChat', { tabId: tab?.id });
+    } catch (error) { showError(error); }
+  });
   $('allow-all').addEventListener('click', async () => {
     if ($('allow-all').disabled) return;
     const enabled = !allPermissionsSelected();

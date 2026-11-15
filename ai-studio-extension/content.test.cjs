@@ -51,7 +51,7 @@ test('a result sent with native Run is confirmed without another upload or submi
 function harness({manualClock=false}={}) {
   const listeners = {}, sent = [], timers = new Map(), state = { supported: true, generating: false, editorEmpty: true, conversationKey: 'active-chat', latestModel: { text: 'old answer' }, latestUser: null };
   let timerId = 0, now=10000, submitted = [], staged = [], observerCallback, accepted = true, sendHandler, disconnected = false, cleared = false, submitHandler, uploadHandler;
-  const uploaded=[],preparedMarkers=[],collapsed=[],collapsedCalls=[];let recoveryHandler;
+  const uploaded=[],preparedMarkers=[],collapsed=[],collapsedCalls=[],collapsedChats=[];let recoveryHandler;
   class TestDate extends Date {static now(){return now;}}
   const adapter = {
     recoverReplySource:async model=>recoveryHandler?recoveryHandler(model):false,
@@ -73,6 +73,7 @@ function harness({manualClock=false}={}) {
     }),
     collapseDelivery:(operationId,expectedText)=>{collapsed.push([operationId,expectedText]);return 1;},
     collapseCall:model=>{collapsedCalls.push(model);return true;},
+    collapseChat:options=>{collapsedChats.push(options);return 1;},
     cleanup: options => cleanups.push(options), restoreCleanup: () => { restores++; }, annotateContext: () => { annotations++; }
   };
   const cleanups=[];let restores=0,annotations=0;
@@ -95,8 +96,25 @@ function harness({manualClock=false}={}) {
     }
     throw Error('timers did not settle');
   };
-  return { setRecoveryHandler:fn=>{recoveryHandler=fn;}, state, sent, staged, submitted, uploaded, preparedMarkers, collapsed, collapsedCalls, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
+  return { setRecoveryHandler:fn=>{recoveryHandler=fn;}, state, sent, staged, submitted, uploaded, preparedMarkers, collapsed, collapsedCalls, collapsedChats, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
 }
+
+test('chat folding runs at startup and during unarmed observation',async()=>{
+  const h=harness();
+  assert.deepEqual(h.collapsedChats,[undefined]);
+  h.mutate();await h.flush();
+  assert.equal(h.collapsedChats.length,2);
+  assert.equal(h.sent.some(message=>message.type==='studio.call'),false);
+});
+
+test('explicit chat folding works without an armed session or tool/model traffic',async()=>{
+  const h=harness(),reply=await h.send({type:'studio.collapseChat'});
+  assert.deepEqual(reply,{ok:true,collapsed:1});
+  assert.equal(h.collapsedChats.length,2);
+  assert.equal(h.collapsedChats[0],undefined);
+  assert.equal(h.collapsedChats[1].force,true);
+  assert.equal(h.sent.some(message=>['studio.call','studio.cleanup','studio.deliver'].includes(message.type)),false);
+});
 
 test('current Run keyboard labels prepare the chat marker before the first request',async()=>{
   for(const label of ['Run Ctrl','Run\nCtrl','Run Control','Run (Ctrl+Enter)','Run Ctrl\nkeyboard_return']){
