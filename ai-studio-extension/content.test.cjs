@@ -51,7 +51,7 @@ test('a result sent with native Run is confirmed without another upload or submi
 function harness({manualClock=false}={}) {
   const listeners = {}, sent = [], timers = new Map(), state = { supported: true, generating: false, editorEmpty: true, conversationKey: 'active-chat', latestModel: { text: 'old answer' }, latestUser: null };
   let timerId = 0, now=10000, submitted = [], staged = [], observerCallback, accepted = true, sendHandler, disconnected = false, cleared = false, submitHandler, uploadHandler;
-  const uploaded=[],preparedMarkers=[],collapsed=[];let recoveryHandler;
+  const uploaded=[],preparedMarkers=[],collapsed=[],collapsedCalls=[];let recoveryHandler;
   class TestDate extends Date {static now(){return now;}}
   const adapter = {
     recoverReplySource:async model=>recoveryHandler?recoveryHandler(model):false,
@@ -72,6 +72,7 @@ function harness({manualClock=false}={}) {
       return JSON.parse(raw).operation_id === operationId && (expectedText === undefined || raw === expectedText);
     }),
     collapseDelivery:(operationId,expectedText)=>{collapsed.push([operationId,expectedText]);return 1;},
+    collapseCall:model=>{collapsedCalls.push(model);return true;},
     cleanup: options => cleanups.push(options), restoreCleanup: () => { restores++; }, annotateContext: () => { annotations++; }
   };
   const cleanups=[];let restores=0,annotations=0;
@@ -94,7 +95,7 @@ function harness({manualClock=false}={}) {
     }
     throw Error('timers did not settle');
   };
-  return { setRecoveryHandler:fn=>{recoveryHandler=fn;}, state, sent, staged, submitted, uploaded, preparedMarkers, collapsed, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
+  return { setRecoveryHandler:fn=>{recoveryHandler=fn;}, state, sent, staged, submitted, uploaded, preparedMarkers, collapsed, collapsedCalls, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
 }
 
 test('current Run keyboard labels prepare the chat marker before the first request',async()=>{
@@ -538,7 +539,7 @@ test('cleanup annotates final answers, hides accepted service turns, and leaves 
   assert.equal(h.cleanups.length,0);assert.equal(h.annotations,1);
   await h.send({type:'studio.cleanup',sessionId:'s1',enabled:true,final:true,operationIds:['op-1']});
   assert.equal(h.cleanups.length,1);assert.deepEqual(Array.from(h.cleanups[0].turns),[]);assert.deepEqual(h.cleanups[0].operationIds,['op-1']);assert.equal(h.annotations,2);
-  h.setAccepted(true);h.mutate();await h.flush();
+  h.setSendHandler(message=>message.type==='studio.call'?{accepted:true,toolCall:true}:{accepted:true});h.setAccepted(true);h.mutate();await h.flush();
   await h.send({type:'studio.cleanup',sessionId:'s1',enabled:true,final:true,operationIds:[]});
   assert.deepEqual(Array.from(h.cleanups[1].turns),[turn]);
   await h.send({type:'studio.cleanup',sessionId:'s1',enabled:false,final:true,operationIds:[]});
@@ -711,11 +712,31 @@ test('a delivered result anchors one fast automatic followup without replaying h
   assert.equal(h.sent.filter(m=>m.type==='studio.call').length,1);
 });
 
+test('auto-collapse runs only after background accepts a real tool call',async()=>{
+  for(const [text,toolCall,expected] of [['ordinary final prose',false,0],['```helper-call\n{"v":1,"name":"read_file","arguments":{"path":"x"}}\n```',true,1]]){
+    const h=harness();await h.send({type:'studio.arm',sessionId:'s1',turnless:true});
+    h.setSendHandler(message=>message.type==='studio.call'?{accepted:true,toolCall}:{accepted:true});
+    h.run();h.state.generating=true;h.mutate();await h.flush();
+    h.state.generating=false;h.state.modelAfterUser=true;h.state.latestModel={text,sourceRevision:'r1',element:{}};
+    h.mutate();await h.flush();
+    assert.equal(h.collapsedCalls.length,expected,text);
+  }
+});
+
+test('explicit collapse requires current session, source revision and exact text',async()=>{
+  const h=harness();await h.send({type:'studio.arm',sessionId:'s1'});
+  const model={text:'current helper call',sourceRevision:'r1',element:{}};h.state.latestModel=model;
+  assert.equal((await h.send({type:'studio.collapseCall',sessionId:'s1',text:'stale',sourceRevision:'r1'})).ok,false);
+  assert.equal((await h.send({type:'studio.collapseCall',sessionId:'s1',text:model.text,sourceRevision:'stale'})).ok,false);
+  assert.equal((await h.send({type:'studio.collapseCall',sessionId:'s1',text:model.text,sourceRevision:'r1'})).ok,true);
+  assert.equal(h.collapsedCalls.length,1);
+});
+
 test('explicit capture reads only a complete selected write_file without replaying chat history',async()=>{
  const h=harness(),tool={name:'write_file',inputSchema:{type:'object',properties:{path:{type:'string'},content:{type:'string'},if_absent:{type:'boolean'}},required:['path','content','if_absent'],additionalProperties:false}};
  const content='code\n'.repeat(300000),text=JSON.stringify({v:1,name:'write_file',arguments:{path:'large.html',content,if_absent:true}});
- h.state.latestModel={text};await h.send({type:'studio.arm',sessionId:'s1',turnless:true});
- const captured=await h.send({type:'studio.captureWrite',sessionId:'s1',tool});assert.equal(captured.ok,true);assert.equal(JSON.parse(captured.text).arguments.content,content);
+ h.state.latestModel={text,sourceRevision:'large-r'};await h.send({type:'studio.arm',sessionId:'s1',turnless:true});
+ const captured=await h.send({type:'studio.captureWrite',sessionId:'s1',tool});assert.equal(captured.ok,true);assert.equal(JSON.parse(captured.text).arguments.content,content);assert.equal(captured.sourceRevision,'large-r');
  h.mutate();await h.flush();assert.equal(h.sent.filter(m=>m.type==='studio.call').length,0);
  h.state.generating=true;assert.equal((await h.send({type:'studio.captureWrite',sessionId:'s1',tool})).ok,false);
  h.state.generating=false;h.state.latestModel={text:JSON.stringify({v:1,name:'exec_command',arguments:{}})};

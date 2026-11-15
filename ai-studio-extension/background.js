@@ -205,7 +205,7 @@ chrome.runtime.onMessage.addListener((msg,sender,reply)=>{
       else {if(sender.tab.id!==state.session.tabId)throw Error('Untrusted Studio sender');result=await studioMessage(msg,sender);}
       rememberPageScript(msg,sender.tab.id);
       return result;
-    }).then(value=>reply({ok:!!value?.accepted,accepted:!!value?.accepted,...(value?.fileChunk?{fileChunk:value.fileChunk}:{}),...(value?.conversationKey?{conversationKey:value.conversationKey}:{})})).catch(e=>reply({ok:false,accepted:false,error:String(e.message||e)}));
+    }).then(value=>reply({ok:!!value?.accepted,accepted:!!value?.accepted,...(value?.toolCall===true?{toolCall:true}:{}),...(value?.fileChunk?{fileChunk:value.fileChunk}:{}),...(value?.conversationKey?{conversationKey:value.conversationKey}:{})})).catch(e=>reply({ok:false,accepted:false,error:String(e.message||e)}));
     return true;
   }
   const connectRequest=msg?.type==='bridge.connect'&&sender.url===chrome.runtime.getURL('panel.html');
@@ -255,7 +255,8 @@ async function command(m) {
       if(!captured?.ok||captured.conversationKey!==s.conversationKey||captured.responseKey!==rejected.responseKey)throw Error(captured?.error||'Ответ или чат изменился, дождитесь новой локальной проверки');
       if(m.type==='bridge.retryReply'){
         delete s.lastResponseKey;
-        await studioMessage({...captured,type:'studio.call',sessionId:s.sessionId,generating:false,contentVersion:chrome.runtime.getManifest?.().version},{tab:{id:s.tabId}});
+        const accepted=await studioMessage({...captured,type:'studio.call',sessionId:s.sessionId,generating:false,contentVersion:chrome.runtime.getManifest?.().version},{tab:{id:s.tabId}});
+        if(accepted.accepted&&accepted.toolCall)await chrome.tabs.sendMessage(s.tabId,{type:'studio.collapseCall',sessionId:s.sessionId,text:captured.text,sourceRevision:captured.sourceRevision}).catch(()=>{});
       }else{
         rejected.correctionRequested=true;s.nextTurn=uuid();s.operationId='validation-'+uuid();
         s.resultText=WebCodexProtocol.buildResult({turnless:!!s.turnless,turn:s.turn,nextTurn:s.nextTurn,operationId:s.operationId,name:'call_validation',error:'The call was rejected BEFORE execution. '+rejected.message+'. Send exactly one complete corrected call using the selected tool schema. Do not repeat previous successful operations.'});
@@ -297,6 +298,7 @@ async function command(m) {
       const recoveryId=captured.pageInstance+':'+Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('');
       if((s.lastRecoveredCall||s.lastRecoveredFile)===recoveryId)break;
       s.lastRecoveredCall=recoveryId;s.paused=false;s.userPaused=false;s.pausedPhase='';s.phase='ready';s.error='';s.pendingCall={...call,turn:s.turn};
+      await chrome.tabs.sendMessage(s.tabId,{type:'studio.collapseCall',sessionId:s.sessionId,text:captured.text,sourceRevision:captured.sourceRevision}).catch(()=>{});
       await dispatch({explicit:true});break;
     }
     case 'bridge.stop': await disableAuto();await stop();break;
@@ -528,6 +530,7 @@ async function studioMessage(m,sender) {
   }
   if(m.type==='studio.snapshot'||m.type==='studio.tick'){if(!m.conversationReplaced&&m.supported&&s.sessionMarker&&(m.chatMarkers||[]).includes(s.sessionMarker))await bindChatMarker(m);if(m.conversationReplaced||!m.supported){if(m.conversationReplaced&&!s.userPaused&&!s.pendingCall&&!s.operationKey&&!s.resultText&&!s.operationId&&s.phase!=='delivery_uncertain'){const restarted=await autoStart(sender,{pageInstance:s.pageInstance,conversationReplaced:true});if(restarted.accepted)return restarted;}if(s.phase!=='paused')s.pausedPhase=s.phase;s.paused=true;s.phase='paused';s.resumeBlocked=true;s.reasonCode=m.reasonCode||WebCodexSession.legacyReason(m.error)||'page_unavailable';s.error=m.error||'AI Studio session is unavailable';await save();return {accepted:true};}if(!s.paused&&s.phase==='delivery_uncertain'&&typeof m.deliveredOperationId==='string'&&!!m.deliveredOperationId&&m.deliveredOperationId===(s.operationId||s.operationKey)){completeDelivery();await save();}await recover();return {accepted:true,conversationKey:s.conversationKey};}
     if(m.type==='studio.call'){
+    let toolCall=false;
     if(s.paused)return {accepted:false};
     const requiredVersion=chrome.runtime.getManifest?.().version;
     if(requiredVersion&&m.contentVersion!==requiredVersion){s.paused=true;s.phase='paused';s.error='Обновите сохранённую вкладку AI Studio: требуется скрипт '+requiredVersion;await save();return{accepted:false};}
@@ -551,11 +554,12 @@ async function studioMessage(m,sender) {
         if(s.turnless)s.lastResponseKey=m.responseKey;
         delete s.rejectedCallFingerprint;delete s.replyError;
         s.notice='';
+        toolCall=!!call;
         if(!call){s.resultText='';s.finalText=m.text;s.phase='ready';await chrome.tabs.sendMessage(s.tabId,{type:'studio.cleanup',sessionId:s.sessionId,enabled:!!state.hideServiceMessages,final:true,operationIds:s.completedOperationIds||[]}).catch(()=>{});}
         else {s.replyRecovery=call.recoveryRules||[];transitionSession({type:'call_received',sessionId:s.sessionId,call:{...call,turn:s.turn},safe:SAFE.has(call.name),responseRevision:m.sourceRevision});if(s.phase==='ready'){await save();await dispatch();}}
       } catch(e){s.paused=true;s.phase='paused';s.error=String(e.message||e);}
     }
-    await save();return {accepted:!s.paused};
+    await save();return {accepted:!s.paused,...(toolCall?{toolCall:true}:{})};
   }
   if(m.type==='studio.tick'){await recover();return {accepted:true,conversationKey:s.conversationKey};}
   throw Error('Unknown Studio message');

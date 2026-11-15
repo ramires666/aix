@@ -73,7 +73,7 @@
   };
   const editorValue = (el) => el.isContentEditable || attr(el, 'contenteditable') === 'true' ? text(el) : String(el.value || '');
   let ownedDraft = null, pendingSubmit = null;
-  const sourceIDs=new WeakMap(),responseRevisions=new WeakMap(),recoveredReplies=new WeakMap();
+  const sourceIDs=new WeakMap(),responseRevisions=new WeakMap(),recoveredReplies=new WeakMap(),collapsedHelperSources=new WeakMap(),collapsedHelperDisplays=new WeakMap(),collapsedHelperWidgets=new WeakSet();
   let nextSourceID=0,nextRevision=0;
   const sourceID=node=>{if(!sourceIDs.has(node))sourceIDs.set(node,++nextSourceID);return sourceIDs.get(node);};
   const answerCopy = (el, preserveCollapsedCode = false) => {
@@ -81,6 +81,23 @@
     if(copy===el||!copy.querySelectorAll)return copy;
     const originals=[el,...el.querySelectorAll('*')],copies=[copy,...copy.querySelectorAll('*')];
     const collapsedCodeNodes=new Set();
+    for(const widget of allElements('ms-code-block',el)){
+      const sources=collapsedHelperSources.get(widget);
+      if(!sources)continue;
+      for(const [source,raw] of sources){
+        if(codeText(source)!==raw)continue;
+        const path=[];
+        for(let node=source;node;node=node.parentElement||node.parent){
+          path.push(node);
+          if(node===widget)break;
+        }
+        if(path[path.length-1]!==widget)continue;
+        for(const node of path){
+          collapsedCodeNodes.add(node);
+          if(node===widget)break;
+        }
+      }
+    }
     if(preserveCollapsedCode){
       for(const widget of allElements('ms-code-block',el)){
         if(!allElements('button',widget).some(button=>hasLabel(button,['expand code snippet'])))continue;
@@ -96,7 +113,7 @@
     for(let i=1;i<originals.length;i++){
       const source=originals[i];let style;
       try{style=document.defaultView?.getComputedStyle?.(source);}catch{}
-      if(copies[i])copies[i].helperBlockBoundary=/^(?:block|flex|grid|flow-root|table|list-item)/.test(style?.display||'');
+      if(copies[i])copies[i].helperBlockBoundary=/^(?:block|flex|grid|flow-root|table|list-item)/.test(collapsedHelperDisplays.get(source)??style?.display??'');
       const inline=attr(source,'style')||'';
       const hidden=source.hidden||attr(source,'hidden')!==null||attr(source,'aria-hidden')==='true'||style?.display==='none'||style?.visibility==='hidden'||/(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(inline);
       const collapsedCode=collapsedCodeNodes.has(source);
@@ -135,8 +152,8 @@
     const match=/^\[Helper session ([a-f0-9]{32})\]\r?\n/.exec(stripUserHeader(raw));
     return match?.[1];
   }).filter(Boolean);
-  const sourceBlocks = copy => {
-    if(!copy)return {blocks:[],remainder:''};
+  const sourceRoots = copy => {
+    if(!copy)return [];
     const candidates=allElements('pre, code, [role="code"], ms-code-block',copy);
     // PRE/CODE nesting is one source. Independent equal blocks retain their IDs.
     const roots=candidates.filter(node=>{
@@ -145,6 +162,11 @@
       }
       return String(node.tagName||node.tag||'').toLowerCase()!=='ms-code-block'||!allElements('pre, code, [role="code"]',node).length;
     });
+    return roots;
+  };
+  const sourceBlocks = copy => {
+    if(!copy)return {blocks:[],remainder:''};
+    const roots=sourceRoots(copy);
     return{blocks:roots.map(node=>({id:sourceID(node.helperSourceNode||node),text:codeText(node),kind:'code'})),remainder:modelText(copy,new Set(roots))};
   };
   const userBody = (el) => {
@@ -580,6 +602,83 @@
     });
   };
   const hasDelivery = (operationId, expectedText) => deliveryTurns(operationId, expectedText).length > 0;
+  const collapseCall = expected => {
+    const current=inspect(),model=current.latestModel;
+    if(!model||model.element!==expected?.element||model.sourceRevision!==expected.sourceRevision||model.text!==expected.text)return false;
+    let accepted=protocol.analyzeReply(model.sourceText??model.text);
+    if(accepted.kind!=='call'&&accepted.kind!=='frame'){
+      const recovered=[];
+      for(let i=0;i<model.sourceBlocks.length;i++){
+        for(let j=i+1;j<model.sourceBlocks.length;j++){
+          const parsed=protocol.analyzeReply(model.sourceBlocks[i].text+'\n'+model.sourceBlocks[j].text);
+          if(parsed.kind==='call')recovered.push(parsed);
+        }
+      }
+      const unique=[...new Map(recovered.map(parsed=>[JSON.stringify([parsed.call,parsed.fileSource]),parsed])).values()];
+      if(unique.length!==1)return false;
+      accepted=unique[0];
+    }
+    const matchesAccepted=raw=>{
+      const parsed=protocol.analyzeReply(raw);
+      if(accepted.kind==='call')return parsed.kind==='call'&&JSON.stringify(parsed.call)===JSON.stringify(accepted.call);
+      return parsed.kind==='frame'&&parsed.name===accepted.name&&parsed.marker===accepted.marker&&parsed.header===accepted.header&&parsed.body===accepted.body;
+    };
+    const matchingBlocks=model.sourceBlocks.filter(block=>matchesAccepted(block.text));
+    if(accepted.kind==='call'&&accepted.fileSource){
+      for(const metadata of model.sourceBlocks){
+        for(const file of model.sourceBlocks){
+          if(metadata.id===file.id||matchingBlocks.some(block=>block.id===metadata.id||block.id===file.id))continue;
+          const parsed=protocol.analyzeReply(metadata.text+'\n'+file.text);
+          if(parsed.kind==='call'&&parsed.fileSource===accepted.fileSource&&JSON.stringify(parsed.call)===JSON.stringify(accepted.call))matchingBlocks.push(metadata,file);
+        }
+      }
+    }
+    if(accepted.kind==='frame'){
+      const fileId=/^(?:[ \t]*content_source[ \t]*[:=][ \t]*([A-Za-z0-9_-]+)[ \t]*\r?\n)/m.exec(accepted.header)?.[1];
+      if(fileId){
+        const begin='<<<HELPER_FILE_BEGIN:'+fileId+'>>>',end='<<<HELPER_FILE_END:'+fileId+'>>>';
+        const fileBlocks=model.sourceBlocks.filter(block=>block.text.startsWith(begin+'\n')||block.text.startsWith(begin+'\r\n'));
+        for(const block of fileBlocks){
+          const raw=block.text,tail=raw.endsWith('\r\n')?raw.slice(0,-2):raw.endsWith('\n')?raw.slice(0,-1):raw;
+          if(tail.endsWith(end)&&!matchingBlocks.some(match=>match.id===block.id))matchingBlocks.push(block);
+        }
+      }
+    }
+    if(!matchingBlocks.length)return false;
+    const matches=[];
+    for(const widget of allElements('ms-code-block',model.element)){
+      if(collapsedHelperWidgets.has(widget))continue;
+      const buttons=elements('button',widget).filter(button=>hasLabel(button,['collapse code snippet']));
+      if(buttons.length!==1)continue;
+      for(const root of sourceRoots(answerCopy(widget))){
+        const id=sourceID(root.helperSourceNode||root);
+        const raw=codeText(root);
+        if(!matchingBlocks.some(block=>block.id===id&&block.text===raw))continue;
+        matches.push({widget,button:buttons[0],source:root.helperSourceNode||root});
+      }
+    }
+    const widgets=new Map(matches.map(match=>[match.widget,match]));
+    if(widgets.size!==matchingBlocks.length)return false;
+    for(const {widget,button,source} of widgets.values()){
+      collapsedHelperSources.set(widget,new Map([[source,codeText(source)]]));
+      for(let node=source;node;node=node.parentElement||node.parent){
+        try{
+          collapsedHelperDisplays.set(node,document.defaultView?.getComputedStyle?.(node)?.display||'');
+        }catch{
+          collapsedHelperDisplays.set(node,'');
+        }
+        if(node===widget)break;
+      }
+      try{
+        button.click();
+      }catch(error){
+        collapsedHelperSources.delete(widget);
+        throw error;
+      }
+      collapsedHelperWidgets.add(widget);
+    }
+    return true;
+  };
   const collapsedDeliveries=new WeakSet();
   const collapseDelivery = (operationId, expectedText) => {
     let count=0;
@@ -638,5 +737,5 @@
     return count;
   };
   if(document.querySelectorAll?.('[data-webcodex-context]').length)annotateContext();
-  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, collapseDelivery, cleanup, restoreCleanup, annotateContext };
+  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, collapseDelivery, collapseCall, cleanup, restoreCleanup, annotateContext };
 });

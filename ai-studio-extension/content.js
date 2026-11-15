@@ -143,7 +143,7 @@
       const contextFields=turnless?{responseKey:await responseKeyFor(callGeneration,observedResultId,observedUserText,model.responseIdentityText??model.text),precedingResultId:observedResultId}:{};
       const current=adapter.inspect();
       if(sessionId!==callSession||current.generating||current.latestModel?.sourceRevision!==model.sourceRevision||current.latestModel?.text!==model.text||(current.latestModel?.sourceText??model.text)!==(model.sourceText??model.text)||turnless&&(callGeneration!==generationCounter||callContext!==observedContext||!awaitingResponse))return;
-      const response=await send('studio.call',{text:model.text,sourceText:model.sourceText??model.text,sourceBlocks:model.sourceBlocks,sourceRemainder:model.sourceRemainder,recoveryRules:model.recoveryRules,sourceRevision:model.sourceRevision,...(model.sourceError?{sourceError:model.sourceError}:{}),conversationKey,generating:false,...contextFields});if(sessionId===callSession&&response?.accepted&&(!turnless||callGeneration===generationCounter&&callContext===observedContext)){lastText=model.text;if(turnless){awaitingResponse=false;if(observedResultId===allowedFollowupId)allowedFollowupId='';}if(recoveringTurn)recoverTurn='';attempted.add(model.text);if(/^```helper-call\s/.test(model.text)&&model.element)serviceNodes.add(model.element);}}finally{if(inFlight===marker)inFlight='';}
+      const response=await send('studio.call',{text:model.text,sourceText:model.sourceText??model.text,sourceBlocks:model.sourceBlocks,sourceRemainder:model.sourceRemainder,recoveryRules:model.recoveryRules,sourceRevision:model.sourceRevision,...(model.sourceError?{sourceError:model.sourceError}:{}),conversationKey,generating:false,...contextFields});if(sessionId===callSession&&response?.accepted&&(!turnless||callGeneration===generationCounter&&callContext===observedContext)){lastText=model.text;if(turnless){awaitingResponse=false;if(observedResultId===allowedFollowupId)allowedFollowupId='';}if(recoveringTurn)recoverTurn='';attempted.add(model.text);if(response.toolCall&&model.element){serviceNodes.add(model.element);adapter.collapseCall?.(model);}}}finally{if(inFlight===marker)inFlight='';}
   }
   const schedule=()=>{if(retired||sourceRecoveryPending)return;try{if(turnless&&!checkInstructions)trackGeneration(adapter.inspect());clearTimeout(observerTimer);observerTimer=setTimeout(()=>observe().catch(reportObserverError),250);}catch(error){reportObserverError(error);}};
   document.addEventListener('click',event=>{
@@ -172,7 +172,7 @@
   window.__webcodexBridgeDispose=retire;
   chrome.runtime.onMessage.addListener((m,_sender,reply)=>{
     if(retired)return;
-    if(!m||!['studio.arm','studio.stage','studio.deliver','studio.snapshot','studio.disarm','studio.cleanup','studio.captureWrite','studio.captureCall','studio.readReply','studio.bindMarker','studio.cancelDelivery'].includes(m.type)){reply({ok:false});return;}
+    if(!m||!['studio.arm','studio.stage','studio.deliver','studio.snapshot','studio.disarm','studio.cleanup','studio.captureWrite','studio.captureCall','studio.readReply','studio.bindMarker','studio.cancelDelivery','studio.collapseCall'].includes(m.type)){reply({ok:false});return;}
     if(m.type==='studio.arm'){
       const s=adapter.inspect();if(!s.supported){reply({supported:false,error:s.error||'AI Studio conversation changed',conversationKey:s.conversationKey});return;}
       if(!m.hideServiceMessages)adapter.restoreCleanup();serviceNodes.clear();
@@ -182,6 +182,11 @@
     }
     if(!sessionId||m.sessionId!==sessionId){reply({ok:false,error:'Stale session'});return;}
     if(m.type==='studio.bindMarker'){sessionMarker=m.sessionMarker||'';reply({ok:true});return;}
+    if(m.type==='studio.collapseCall'){
+      const model=adapter.inspect().latestModel;
+      if(!model||model.sourceRevision!==m.sourceRevision||model.text!==m.text){reply({ok:false});return;}
+      reply({ok:adapter.collapseCall?.(model)===true});return;
+    }
     if(m.type==='studio.cancelDelivery'){deliveryRevision++;reply({ok:true});return;}
     if(m.type==='studio.readReply'){
       let s=adapter.inspect(),model=s.latestModel;const revision=navigationRevision;
@@ -204,7 +209,7 @@
         const call=WebCodexProtocol.parseCall(s.latestModel.text,null,selected,{...s.latestModel,sessionMarker,allowUnmarked:true,lastFrame:true});
         if(!call||m.type==='studio.captureWrite'&&call.name!=='write_file')throw Error('В последнем ответе нет единственного корректного выбранного вызова');
         resetReply();baselineText=s.latestModel.text;lastText=baselineText;awaitingResponse=false;allowedFollowupId='';
-        reply({ok:true,text:s.latestModel.text,sourceBlocks:s.latestModel.sourceBlocks,sourceRemainder:s.latestModel.sourceRemainder,pageInstance,conversationKey:s.conversationKey});
+        reply({ok:true,text:s.latestModel.text,sourceRevision:s.latestModel.sourceRevision,sourceBlocks:s.latestModel.sourceBlocks,sourceRemainder:s.latestModel.sourceRemainder,pageInstance,conversationKey:s.conversationKey});
       })().catch(error=>reply({ok:false,error:String(error.message||error)}));return true;
     }
     if(m.type==='studio.cleanup'){if(m.final||!adapter.inspect().generating)adapter.annotateContext();if(!m.enabled)adapter.restoreCleanup();else if(m.final)adapter.cleanup({turns:[...serviceNodes],operationIds:m.operationIds||[]});reply({ok:true});return;}

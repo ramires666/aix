@@ -735,6 +735,69 @@ test('a result acknowledged after an earlier poll can be collapsed then',()=>{
   assert.equal(state.adapter.hasDelivery('late-result'),true);
 });
 
+test('collapses only the exact accepted Helper source and keeps parsing stable after collapse',()=>{
+  const state=setup();state.chunk.remove();state.model.children=[];
+  const body=state.model.add(new Node('div',{class:'chat-turn-container model'}));
+  body.add(new Node('p',{},'I will read that file.'));
+  const widget=body.add(new Node('ms-code-block'));
+  const button=widget.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const region=widget.add(new Node('div'));
+  const marker='a'.repeat(32),raw='HELPER_'+marker+' read_file\npath: notes.txt\nEND_'+marker;
+  const code=region.add(new Node('pre',{},raw));
+  const example=body.add(new Node('ms-code-block'));
+  const exampleButton=example.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  example.add(new Node('pre',{},'Example only: HELPER_'+ 'a'.repeat(32)+' read_file'));
+  button.click=()=>{button.clicked=true;button.attrs['aria-label']='Expand code snippet';region.attrs.style='display:none';region.attrs['aria-hidden']='true';};
+  const model=state.adapter.inspect().latestModel;
+  assert.equal(model.sourceBlocks.length,2);
+  assert.equal(state.adapter.collapseCall({...model,element:{}}),false,'model identity must match');
+  const exact={...model,element:model.element};
+  assert.equal(state.adapter.collapseCall(exact),true);
+  assert.equal(button.clicked,true);
+  assert.equal(exampleButton.clicked,undefined);
+  const after=state.adapter.inspect().latestModel;
+  assert.equal(after.sourceRevision,model.sourceRevision);
+  assert.equal(after.text,model.text);
+  assert.ok(after.sourceBlocks.some(block=>block.text===code.textContent));
+  assert.equal(state.adapter.collapseCall(exact),false,'already collapsed source must not be clicked again');
+  button.attrs['aria-label']='Collapse code snippet';delete region.attrs.style;delete region.attrs['aria-hidden'];
+  assert.equal(state.adapter.collapseCall(exact),false,'manual expansion must remain expanded');
+});
+
+test('ordinary model prose with no Helper call is never collapsed',()=>{
+  const state=setup();
+  const button=state.model.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const model=state.adapter.inspect().latestModel;
+  assert.equal(state.adapter.collapseCall(model),false);
+  assert.equal(button.clicked,undefined);
+});
+
+test('collapses paired legacy metadata and Helper-file source blocks from the accepted call',()=>{
+  const state=setup();state.chunk.remove();state.model.children=[];
+  const body=state.model.add(new Node('div',{class:'chat-turn-container model'}));
+  const metadataWidget=body.add(new Node('ms-code-block'));
+  const metadataButton=metadataWidget.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const metadataRegion=metadataWidget.add(new Node('div'));
+  const metadata=JSON.stringify({v:1,name:'write_file',arguments:{path:'notes.txt',if_absent:true},content_source:'file_1'});
+  metadataRegion.add(new Node('pre',{},metadata));
+  const fileWidget=body.add(new Node('ms-code-block'));
+  const fileButton=fileWidget.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const fileRegion=fileWidget.add(new Node('div'));
+  const fileRaw='<<<HELPER_FILE_BEGIN:file_1>>>\nfile bytes\n<<<HELPER_FILE_END:file_1>>>';
+  fileRegion.add(new Node('pre',{},fileRaw));
+  metadataButton.click=()=>{metadataButton.attrs['aria-label']='Expand code snippet';metadataRegion.attrs.style='display:none';};
+  fileButton.click=()=>{fileButton.attrs['aria-label']='Expand code snippet';fileRegion.attrs.style='display:none';};
+  const model=state.adapter.inspect().latestModel;
+  const combined=require('./protocol.js').analyzeReply(metadata+'\n'+fileRaw);
+  assert.equal(combined.kind,'call',JSON.stringify(combined));
+  assert.equal(state.adapter.collapseCall(model),true,JSON.stringify({text:model.sourceText,blocks:model.sourceBlocks.map(block=>block.text)}));
+  assert.equal(metadataButton.attrs['aria-label'],'Expand code snippet');
+  assert.equal(fileButton.attrs['aria-label'],'Expand code snippet');
+  const after=state.adapter.inspect().latestModel;
+  assert.equal(after.text,model.text);
+  assert.equal(after.sourceRevision,model.sourceRevision);
+});
+
 test('proves legacy Markdown-rendered delivery against the exact expected envelope', () => {
   const payload = JSON.stringify({
     type: 'helper-result', v: 1, operation_id: 'op-legacy', name: 'browser',

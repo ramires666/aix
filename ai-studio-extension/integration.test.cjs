@@ -1064,6 +1064,20 @@ test('explicit recovery executes the latest selected call once and keeps its res
   const text=JSON.stringify({v:1,name:'list_directory',arguments:{path:'W:\\_python'}});
   const h=harness(initial,{listTools:()=>[selected],sendMessage:async(_id,message)=>message.type==='studio.captureCall'?{ok:true,text,pageInstance:'page-last-call',conversationKey:'chat-1'}:{ok:true,supported:true,conversationKey:'chat-1'}},{bridgeAuto:{enabled:true,consent:true,agentId:'agent-1',toolNames:['list_directory']}});
   await h.status();assert.equal((await h.message({type:'bridge.runFromReply'})).ok,true);assert.equal(h.createCount,1);
+  assert.ok(h.pageMessages.some(message=>message.type==='studio.collapseCall'&&message.sessionId==='session-1'&&message.text===text));
   assert.equal(h.calls.find(call=>call.method==='POST').body.arguments.path,'W:\\_python');
   assert.equal((await h.message({type:'bridge.runFromReply'})).ok,false,'an unfinished operation cannot be repeated');assert.equal(h.createCount,1);
+});
+
+
+test('only a validated tool call is acknowledged as collapsible',async()=>{
+  const active=harness();await active.status();
+  const call=await active.call('turn-1');
+  assert.equal(call.accepted,true);
+  assert.equal(call.toolCall,true);
+  for(const text of ['A normal answer','{"v":1,"name":"read_file","arguments":']){
+    const h=harness();await h.status();
+    const reply=await h.message({type:'studio.call',sessionId:'session-1',conversationKey:'chat-1',generating:false,text},h.page);
+    assert.equal(reply.toolCall,undefined);
+  }
 });
