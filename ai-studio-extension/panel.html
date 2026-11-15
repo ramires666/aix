@@ -11,7 +11,7 @@
   <main>
     <header>
       <h1>WebCodex Bridge</h1>
-      <p id="extension-version">Скрипт 0.5.4 · Агент не подключён</p>
+      <p id="extension-version">Скрипт 0.5.5 · Агент не подключён</p>
       <div class="row"><button id="arm" type="button">Запустить сеанс</button></div>
     </header>
     <p id="error" class="error" role="alert" aria-live="assertive" hidden></p>
@@ -33,7 +33,14 @@
     </section>
 
     <section aria-labelledby="session-heading">
-      <h2 id="session-heading">Сеанс</h2>
+      <div class="session-heading-row">
+        <h2 id="session-heading">Сеанс</h2>
+        <div class="chat-width-control">
+          <div class="chat-width-slider"><input id="chat-width" type="range" min="0" max="100" step="10" value="0" aria-label="Ширина чата"></div>
+          <div class="chat-width-labels" aria-hidden="true"><span>default</span><span>Max</span></div>
+          <output id="chat-width-value" for="chat-width" aria-live="polite">default</output>
+        </div>
+      </div>
       <p>Локальный агент</p>
       <div id="agents" class="choices" aria-label="Выбор агента"></div>
       <div class="row">

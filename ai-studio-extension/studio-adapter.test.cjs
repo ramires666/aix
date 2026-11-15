@@ -1016,3 +1016,31 @@ test('manual history collapse leaves ordinary dialogue and Helper examples witho
   assert.equal(state.adapter.collapseChat({force:true}),0);
   assert.equal(button.clicked,undefined);
 });
+
+
+test('chat width expands constrained chat ancestors and restores exact default styles',()=>{
+  const state=setup();let base=600;
+  state.root.getBoundingClientRect=()=>({left:0,right:1000,width:1000});
+  state.model.getBoundingClientRect=()=>({left:(1000-base)/2,right:(1000+base)/2,width:base});
+  state.document.defaultView.getComputedStyle=node=>({maxWidth:node===state.model?'600px':'none'});
+  state.model.style.setProperty('width','70%','important');
+  state.model.style.setProperty('max-width','600px');
+  const original=state.model.textContent;
+  assert.equal(state.adapter.setChatWidth(10),true);
+  assert.equal(state.model.style.getPropertyValue('max-width'),'calc(540px + 10%)');
+  assert.equal(state.model.style.getPropertyPriority('width'),'important');
+  state.adapter.setChatWidth(100);
+  assert.equal(state.model.style.getPropertyValue('width'),'100%');
+  assert.equal(state.model.style.getPropertyValue('max-width'),'100%');
+  assert.equal(state.adapter.setChatWidth(15),false);
+  assert.equal(state.adapter.setChatWidth(110),false);
+  assert.equal(state.model.style.getPropertyValue('width'),'100%');
+  base=400;state.adapter.setChatWidth(10,true);
+  assert.equal(state.model.style.getPropertyValue('width'),'calc(360px + 10%)');
+  state.adapter.setChatWidth(0);
+  assert.equal(state.model.style.getPropertyValue('width'),'70%');
+  assert.equal(state.model.style.getPropertyPriority('width'),'important');
+  assert.equal(state.model.style.getPropertyValue('max-width'),'600px');
+  assert.equal(state.model.style.getPropertyValue('box-sizing'),'');
+  assert.equal(state.model.textContent,original);
+});

@@ -4,7 +4,7 @@ AIX соединяет чат Google AI Studio с файлами и команд
 
 ## Быстрый старт из релиза
 
-1. Скачайте [готовый ZIP для Windows](https://github.com/ramires666/aix/releases/latest/download/AIX-0.5.4-windows-x64.zip).
+1. Скачайте [готовый ZIP для Windows](https://github.com/ramires666/aix/releases/latest/download/AIX-0.5.5-windows-x64.zip).
 2. Распакуйте **весь архив** в постоянную папку, например `C:\AIX`.
 3. Дважды нажмите `start-agent.bat`. Оставьте открывшееся окно работающим.
 4. В Chrome откройте `chrome://extensions`, включите **«Режим разработчика»**, нажмите **«Загрузить распакованное расширение»** и выберите папку `ai-studio-extension` из распакованного архива.

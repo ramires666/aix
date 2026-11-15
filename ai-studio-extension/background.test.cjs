@@ -22,6 +22,25 @@ function harness(stored={}, failInitialize=false, localStore={}, clientOverride=
   return {listeners,data,sent,chrome,tabMessages};
 }
 function message(h,msg,sender){return new Promise(resolve=>{const async=h.listeners.message(msg,sender,resolve);if(async!==true)resolve(undefined);});}
+test('chat width changes work while idle and persist as validated global preference',async()=>{
+  const localStore={chatWidth:40},h=harness({},false,localStore),panel={url:'chrome-extension://test-id/panel.html'};
+  const restored=await message(h,{type:'bridge.status'},panel);assert.equal(restored.state.chatWidth,40);
+  const reply=await message(h,{type:'bridge.chatWidth',tabId:7,value:100},panel);
+  assert.equal(reply.ok,true);assert.equal(reply.state.chatWidth,100);assert.equal(localStore.chatWidth,100);
+  assert.equal(h.data.webcodexState.session.phase,'idle');assert.equal(h.data.webcodexState.connected,false);
+  assert.deepEqual(h.tabMessages.map(([,msg])=>[msg.type,msg.value]),[['studio.chatWidth',100]]);
+});
+test('chat width rejects invalid values and non-AI-Studio tabs without saving',async()=>{
+  const localStore={chatWidth:20},h=harness({},false,localStore),panel={url:'chrome-extension://test-id/panel.html'};
+  for(const value of [-10,110,15,10.5,'10']){
+    const reply=await message(h,{type:'bridge.chatWidth',tabId:7,value},panel);
+    assert.equal(reply.ok,false);assert.match(reply.error,/Ширина должна быть/);
+  }
+  h.chrome.tabs.get=async()=>({url:'https://example.com/'});
+  const wrongOrigin=await message(h,{type:'bridge.chatWidth',tabId:7,value:30},panel);
+  assert.equal(wrongOrigin.ok,false);assert.match(wrongOrigin.error,/Google AI Studio/);
+  assert.equal(localStore.chatWidth,20);assert.equal(h.tabMessages.length,0);
+});
 test('chat folding targets a selected AI Studio tab while disconnected and idle',async()=>{
   const h=harness(),panel={url:'chrome-extension://test-id/panel.html'};
   const reply=await message(h,{type:'bridge.collapseChat',tabId:7},panel);

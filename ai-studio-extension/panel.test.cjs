@@ -70,6 +70,24 @@ test('quick controls follow the version and local agent while allow-all persists
   for(const id of ['consent','automatic','attach-files','auto-approve','hide-service'])assert.equal(panel.get(id).checked,true,id);
 });
 
+test('chat width slider is next to the session heading and sends persisted tab values', async () => {
+  const html = fs.readFileSync(require.resolve('./panel.html'), 'utf8');
+  assert.match(html, /<div class="session-heading-row">\s*<h2 id="session-heading">Сеанс<\/h2>\s*<div class="chat-width-control">/);
+  assert.match(html, /id="chat-width" type="range" min="0" max="100" step="10" value="0"/);
+  assert.ok(html.includes('<span>default</span><span>Max</span>'));
+  assert.equal((html.match(/<span>\d+%<\/span>/g) || []).length, 0);
+  const panel = createPanel();
+  await panel.update({ connected: false, chatWidth: 30, session: { phase: 'idle' }, tools: [], agents: [] });
+  assert.equal(panel.get('chat-width').value, '30');
+  assert.equal(panel.get('chat-width-value').textContent, '30%');
+  panel.get('chat-width').value = '0'; await panel.input('chat-width', '0');
+  const defaultWidth = panel.messages.filter(message => message.type === 'bridge.chatWidth').at(-1);
+  assert.equal(defaultWidth.tabId, 1); assert.equal(defaultWidth.value, 0);
+  panel.get('chat-width').value = '100'; await panel.input('chat-width', '100');
+  assert.equal(panel.get('chat-width-value').textContent, 'Max');
+  assert.equal(panel.messages.filter(message => message.type === 'bridge.chatWidth').at(-1).value, 100);
+});
+
 test('resume identifies the currently selected tab for saved-chat recovery',async()=>{
   const panel=createPanel();
   await panel.click('resume');

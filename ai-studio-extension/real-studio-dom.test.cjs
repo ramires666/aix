@@ -226,6 +226,23 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   historyButton.setAttribute('aria-label','Collapse code snippet');historyRegion.style.display='';
   if(refreshedAdapter.collapseChat()!==0||refreshedAdapter.collapseChat({force:true})!==2)throw Error('manual history folding failed or automatic scan undid manual expansion');cases++;
   historyResult.remove();
+  const widthPane=document.createElement('div');widthPane.style.width='1000px';
+  const widthTurn=document.createElement('ms-chat-turn');widthTurn.setAttribute('data-turn-role','Model');widthTurn.style.cssText='display:block;width:100%;max-width:600px;margin:0 auto';widthTurn.textContent='Width geometry';
+  const widthComposer=document.createElement('ms-prompt-input-wrapper');widthComposer.style.cssText='display:block;width:100%;max-width:600px;margin:0 auto';
+  const innerComposer=document.createElement('div');innerComposer.style.cssText='max-width:500px;width:100%;margin:0 auto';
+  const innerEditor=document.createElement('textarea');innerComposer.append(innerEditor);widthComposer.append(innerComposer);
+  widthPane.append(widthTurn,widthComposer);document.body.append(widthPane);
+  for(const value of [0,10,50,100]){
+    adapter.setChatWidth(value);
+    const expected=600+4*value;
+    if(Math.abs(widthTurn.getBoundingClientRect().width-expected)>1||Math.abs(widthComposer.getBoundingClientRect().width-expected)>1)throw Error('chat width geometry failed at '+value);
+  }
+  if(Math.abs(innerComposer.getBoundingClientRect().width-1000)>1)throw Error('inner composer width remained constrained at Max');
+  widthPane.style.width='320px';adapter.setChatWidth(100,true);
+  if(widthTurn.getBoundingClientRect().width>321||widthComposer.getBoundingClientRect().width>321)throw Error('chat width overflowed a narrow pane');
+  adapter.setChatWidth(0);widthPane.style.width='1000px';
+  if(Math.abs(widthTurn.getBoundingClientRect().width-600)>1||widthTurn.style.maxWidth!=='600px'||widthTurn.textContent!=='Width geometry')throw Error('default chat width or text was not restored');
+  widthPane.remove();cases++;
   const ownDraft=document.querySelector('textarea').value;let preserved=false;
   document.addEventListener('click',event=>{if(event.target===run){adapter.prepareSessionMessage(liveMarker);preserved=document.querySelector('textarea').value===ownDraft;}},true);
   if(!await adapter.submit(ownDraft)||!preserved)throw Error('Run capture modified the owned result');cases++;
@@ -246,5 +263,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:100',output.slice(-3000));t.diagnostic('100 scenarios passed in installed Chrome, including accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
+  assert.equal(result,'PASS:101',output.slice(-3000));t.diagnostic('101 scenarios passed in installed Chrome, including accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });

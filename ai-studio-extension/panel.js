@@ -4,7 +4,7 @@
   const errorEl = $('error');
   $('gate-connection').hidden = true;
   const installedVersion = chrome.runtime.getManifest?.().version || '';
-  let state = null, toolSignature = '', agentSignature = '', toolsInitialized = false;
+  let state = null, toolSignature = '', agentSignature = '', toolsInitialized = false, chatWidthEditing = false;
   let connecting = false, sessionChanging = false;
   const permissionFields = {consent: 'consent', automatic: 'automatic', attachFiles: 'attach-files', autoApprove: 'auto-approve'};
   function allPermissionsSelected() {
@@ -57,6 +57,8 @@
     if(Number.isInteger(next.autoSettings?.revision)&&Number.isInteger(state?.autoSettings?.revision)&&next.autoSettings.revision<state.autoSettings.revision)next={...next,autoSettings:state.autoSettings};
     const previousError = state?.session?.error||state?.pageScript?.observerError;
     state = next;
+    if (Number.isInteger(next.chatWidth) && !chatWidthEditing && document.activeElement !== $('chat-width')) $('chat-width').value = String(next.chatWidth);
+    $('chat-width-value').textContent = Number($('chat-width').value) === 0 ? 'default' : Number($('chat-width').value) === 100 ? 'Max' : `${$('chat-width').value}%`;
     const session = next.session || {};
     const page = next.pageScript;
     const agentVersion = next.connected && next.transport !== 'gate' ? next.agentVersion || 'версия не передана' : 'не подключён';
@@ -172,6 +174,16 @@
       await act('bridge.collapseChat', { tabId: tab?.id });
     } catch (error) { showError(error); }
   });
+  $('chat-width').addEventListener('input', async () => {
+    chatWidthEditing = true;
+    const value = Number($('chat-width').value);
+    $('chat-width-value').textContent = value === 0 ? 'default' : value === 100 ? 'Max' : `${value}%`;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await act('bridge.chatWidth', { tabId: tab?.id, value });
+    } catch (error) { showError(error); }
+  });
+  $('chat-width').addEventListener('blur', () => { chatWidthEditing = false; render(state); });
   $('allow-all').addEventListener('click', async () => {
     if ($('allow-all').disabled) return;
     const enabled = !allPermissionsSelected();

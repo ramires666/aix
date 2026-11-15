@@ -752,6 +752,50 @@
     }
     hiddenByUs.clear();
   };
+  let chatWidth=0;
+  const widthOverrides=new Map();
+  const widthProperties=['width','max-width','box-sizing','margin-left','margin-right'];
+  const setChatWidth = (value,refresh=false) => {
+    if(!Number.isInteger(value)||value<0||value>100||value%10!==0)return false;
+    const changed=value!==chatWidth||refresh;
+    for(const [node,properties] of widthOverrides){
+      if(!changed&&node.isConnected!==false)continue;
+      for(const [name,original,priority] of properties){
+        if(original)node.style.setProperty(name,original,priority);
+        else node.style.removeProperty(name);
+      }
+      widthOverrides.delete(node);
+    }
+    chatWidth=value;
+    if(value===0)return true;
+    const candidates=new Set(),visited=new Set();
+    const anchors=[...turns(),...allElements('ms-prompt-input-wrapper'),...editors()];
+    for(const anchor of anchors){
+      for(let node=anchor;node&&node!==document.body&&node!==document.documentElement;node=node.parentElement||node.parent){
+        if(visited.has(node))break;
+        visited.add(node);
+        if(widthOverrides.has(node)||!node.style||!node.getBoundingClientRect)continue;
+        const parent=node.parentElement||node.parent;
+        if(!parent?.getBoundingClientRect)continue;
+        const style=document.defaultView?.getComputedStyle?.(node);
+        if(!style)continue;
+        const box=node.getBoundingClientRect(),outer=parent.getBoundingClientRect();
+        const left=box.left-outer.left,right=outer.right-box.right;
+        const centered=left>2&&right>2&&Math.abs(left-right)<2;
+        const limited=style.maxWidth&&style.maxWidth!=='none'&&style.maxWidth!=='100%';
+        if(box.width>0&&(limited||centered))candidates.add(node);
+      }
+    }
+    const widths=[...candidates].map(node=>[node,node.getBoundingClientRect().width]);
+    for(const [node,width] of widths){
+      widthOverrides.set(node,widthProperties.map(name=>[name,node.style.getPropertyValue(name),node.style.getPropertyPriority(name)]));
+      const expanded=value===100?'100%':`calc(${width*(1-value/100)}px + ${value}%)`;
+      for(const name of ['width','max-width'])node.style.setProperty(name,expanded,'important');
+      node.style.setProperty('box-sizing','border-box','important');
+      for(const name of ['margin-left','margin-right'])node.style.setProperty(name,'auto','important');
+    }
+    return true;
+  };
   const annotateContext = () => {
     const recognized = turns();
     const chars = recognized.reduce((total, turn) => {
@@ -774,5 +818,5 @@
     return count;
   };
   if(document.querySelectorAll?.('[data-webcodex-context]').length)annotateContext();
-  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, collapseDelivery, collapseCall, collapseChat, cleanup, restoreCleanup, annotateContext };
+  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, collapseDelivery, collapseCall, collapseChat, setChatWidth, cleanup, restoreCleanup, annotateContext };
 });

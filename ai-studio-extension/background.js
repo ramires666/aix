@@ -1,7 +1,7 @@
 importScripts('vendor/json-tools.js', 'protocol.js', 'session-state.js', 'attachments.js', 'mcp-client.js', 'local-client.js');
 const KEY = 'webcodexState', LARGE_KEY='webcodexLargeSessionState', DURABLE_KEY='webcodexDurableState', SAFE = new Set(['list_agents','list_allowed_roots','list_directory','read_file','search_files','find_files','poll_command','list_commands']);
 const GATE_ENABLED = false;
-let state = {connected:false,transport:'',localError:'',gateUrl:'',clientId:'',agents:[],tools:[],session:{phase:'idle',transport:'',agentId:'',toolNames:[],automatic:false,paused:false,turn:'',instructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:null}};
+let state = {chatWidth:0,connected:false,transport:'',localError:'',gateUrl:'',clientId:'',agents:[],tools:[],session:{phase:'idle',transport:'',agentId:'',toolNames:[],automatic:false,paused:false,turn:'',instructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:null}};
 let token = '', client = null, localClient = null, gateClient = null, serial = Promise.resolve(), demo = false, connecting = false, lastAutoRefresh = 0, lastAutoRefreshOK = false, autoToolsAvailable = true;
 let restoreError='',authorizationRevision=0,approvalRevision=0,automaticRevision=0,interruptWrites=Promise.resolve();
 const uuid = () => crypto.randomUUID();
@@ -81,6 +81,8 @@ async function restore() {
     const {bridgeAuto}=await chrome.storage.local.get('bridgeAuto');state.autoSettings=bridgeAuto?{...bridgeAuto,autoApprove:!!bridgeAuto.autoApprove}:{enabled:false,autoApprove:false};
     state.session.autoApprove=Object.hasOwn(state.session,'autoApprove')?!!state.session.autoApprove:state.autoSettings.autoApprove;
     state.hideServiceMessages=!!(await chrome.storage.local.get('hideServiceMessages')).hideServiceMessages;
+    const savedWidth=(await chrome.storage.local.get('chatWidth')).chatWidth;
+    state.chatWidth=Number.isInteger(savedWidth)&&savedWidth>=0&&savedWidth<=100&&savedWidth%10===0?savedWidth:0;
     if(!GATE_ENABLED){
       const s=state.session;
       if(s.transport==='gate'&&!['idle','stopped'].includes(s.phase)){
@@ -217,6 +219,16 @@ async function command(m) {
   if(restoreError){if(m.type==='bridge.status')return publicState();throw Error(restoreError);}
   switch(m.type) {
     case 'bridge.status': await refreshForAutoStart(state.autoSettings);await migrateAutoSetup();updateAutoStatus();return publicState();
+    case 'bridge.chatWidth': {
+      if(!Number.isInteger(m.value)||m.value<0||m.value>100||m.value%10!==0)throw Error('Ширина должна быть от 0 до 100 с шагом 10');
+      if(!Number.isInteger(m.tabId))throw Error('Откройте вкладку Google AI Studio');
+      const tab=await chrome.tabs.get(m.tabId);
+      if(new URL(tab.url||'').origin!=='https://aistudio.google.com')throw Error('Откройте вкладку Google AI Studio');
+      const result=await chrome.tabs.sendMessage(m.tabId,{type:'studio.chatWidth',value:m.value});
+      if(!result?.ok)throw Error(result?.error||'Обновите вкладку AI Studio и повторите');
+      await chrome.storage.local.set({chatWidth:m.value});state.chatWidth=m.value;
+      break;
+    }
     case 'bridge.collapseChat': {
       if(!Number.isInteger(m.tabId))throw Error('Откройте вкладку Google AI Studio');
       const tab=await chrome.tabs.get(m.tabId);
