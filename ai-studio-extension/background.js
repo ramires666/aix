@@ -291,7 +291,7 @@ async function command(m) {
       if(!['waiting_model','ready','paused'].includes(s.phase)||s.resumeBlocked||s.pendingCall||s.operationId||s.operationKey||s.resultText||s.reasonCode==='outcome_unknown')throw Error('Сначала завершите проверку предыдущей операции');
       const captured=await chrome.tabs.sendMessage(s.tabId,{type:writeOnly?'studio.captureWrite':'studio.captureCall',sessionId:s.sessionId,...(writeOnly?{tool:selected[0]}:{tools:selected})});
       if(!captured?.ok||captured.conversationKey!==s.conversationKey)throw Error(captured?.error||'Не удалось прочитать последний ответ в текущем чате');
-      const call=WebCodexProtocol.parseCall(captured.text,null,selected,{...captured,sessionMarker:s.sessionMarker,allowUnmarked:true});
+      const call=WebCodexProtocol.parseCall(captured.text,null,selected,{...captured,sessionMarker:s.sessionMarker,allowUnmarked:true,lastFrame:true});
       if(!call||writeOnly&&call.name!=='write_file')throw Error('В последнем ответе нет корректного выбранного вызова');
       const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(captured.text));
       const recoveryId=captured.pageInstance+':'+Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('');

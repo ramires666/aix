@@ -6,7 +6,7 @@
   window.__webcodexBridgeDispose?.();
   window.__webcodexBridgeLoaded = true;
   const adapter=WebCodexStudio.createAdapter(document,location);
-  const contentVersion='0.5.1';
+  const contentVersion='0.5.2';
   const pageInstance=Date.now()+'-'+Math.random();
   let sessionMarker='';
   let sessionId='', baselineText='', conversationKey='', lastText='', lastDelivered='', inFlight='', observerTimer=0, stopping=false, newChatPending=false, newChatRequestInFlight=false, attempted=new Set(), recoverTurn='', recoverTools=[], turnless=false, turnlessRecovery=false, observedUserText='', observedResultId='', observedContext='';
@@ -201,7 +201,7 @@
         s=await recoverReplySource(s);if(!s)throw Error('Ответ изменился во время чтения');
         const selected=m.type==='studio.captureWrite'?[m.tool]:m.tools||[];
         if(s.latestModel.sourceError)throw Error(s.latestModel.sourceError);
-        const call=WebCodexProtocol.parseCall(s.latestModel.text,null,selected,{...s.latestModel,sessionMarker,allowUnmarked:true});
+        const call=WebCodexProtocol.parseCall(s.latestModel.text,null,selected,{...s.latestModel,sessionMarker,allowUnmarked:true,lastFrame:true});
         if(!call||m.type==='studio.captureWrite'&&call.name!=='write_file')throw Error('В последнем ответе нет единственного корректного выбранного вызова');
         resetReply();baselineText=s.latestModel.text;lastText=baselineText;awaitingResponse=false;allowedFollowupId='';
         reply({ok:true,text:s.latestModel.text,sourceBlocks:s.latestModel.sourceBlocks,sourceRemainder:s.latestModel.sourceRemainder,pageInstance,conversationKey:s.conversationKey});

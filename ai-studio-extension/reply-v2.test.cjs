@@ -131,3 +131,15 @@ test('re-emitted raw frames are accepted only when every source byte matches',()
     assert.throws(()=>parseCall(raw,null,tools,{...options,sourceBlocks:[sources[0],{id:9,kind:'code',text:changed}]}));
   }
 });
+
+
+test('explicit last-call recovery selects the final complete frame while automatic parsing rejects alternatives',()=>{
+  const first=frame('write_file\npath: W:/draft\nif_absent: true','draft');
+  const last=frame('write_file\npath: W:/final\nif_absent: true','final');
+  const options={sessionMarker:marker,sourceBlocks:[{kind:'code',text:first},{kind:'code',text:last}]};
+  assert.throws(()=>parseCall(first+'\n'+last,null,tools,options),/Ambiguous/);
+  assert.equal(parseCall(first+'\n'+last,null,tools,{...options,lastFrame:true}).arguments.path,'W:/final');
+  for(const text of [last.replace(marker,'f'.repeat(32)),last.replace('END_'+marker,''),last.replace('if_absent: true','unexpected: true')]){
+    assert.throws(()=>parseCall(last,null,tools,{...options,lastFrame:true,sourceBlocks:[options.sourceBlocks[0],{kind:'code',text}]}));
+  }
+});
