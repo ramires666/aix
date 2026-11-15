@@ -461,7 +461,7 @@ async function bindChatMarker(snapshot,{select=false}={}){
     marker=[...markers].reverse().find(value=>{
       const record=bindings[value];
       return record?.tabId===s.tabId&&(!record.address||record.address===address);
-    })||((s.bindingAddress===address&&marker)?marker:'');
+    })||(address&&bindings[snapshot.replyMarker]?.tabId===s.tabId&&bindings[snapshot.replyMarker]?.address===address?snapshot.replyMarker:'')||((s.bindingAddress===address&&marker)?marker:'');
   }
   if(!marker)marker=Array.from(crypto.getRandomValues(new Uint8Array(16)),byte=>byte.toString(16).padStart(2,'0')).join('');
   const previous=bindings[marker];

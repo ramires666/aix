@@ -247,7 +247,7 @@
     const userSources=user?resultSources(user):[];
     const latestUserOperationId = userSources.length===1?parseResultOperationId(userSources[0]):'';
     return {
-      conversationKey: conversationKey(), chatMarkers:chatMarkers(recognized), chatAddress:/^\/(?:app\/)?prompts\/(?!new_chat\b|new\b)[^/]+\/?$/.test(location.pathname||'')?location.pathname:'', generating, controlsPending,
+      conversationKey: conversationKey(), chatMarkers:chatMarkers(recognized), replyMarker:parsedModel?.kind==='frame'?parsedModel.marker:'', chatAddress:/^\/(?:app\/)?prompts\/(?!new_chat\b|new\b)[^/]+\/?$/.test(location.pathname||'')?location.pathname:'', generating, controlsPending,
       editorEmpty: candidateEditors.length === 1 && editorValue(candidateEditors[0]) === '',
       supported: !error, error, modelError, latestModel: model ? { element: model, sourceError, sourceText:modelSource, sourceBlocks:blocks, sourceRemainder:remainder, recoveryRules:parsedModel?.recoveryRules||[], ...(recoveredReplies.has(model)?{responseIdentityText:recoveredReplies.get(model).identityText}:{}), renderedSource, sourceRevision:responseRevisions.get(model).revision, text:parsedModel.kind==='call'?'```helper-call\n'+parsedModel.raw+'\n```':modelSource } : null,
       latestUser: user ? { element: user, text: latestUserText, operationId: latestUserOperationId } : null,

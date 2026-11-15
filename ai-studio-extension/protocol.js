@@ -237,11 +237,14 @@
       frames.push({source:{text,kind:'text'},frame});
       extracted.remainder='';
     }
-    if(frames.length!==1)fail('Ambiguous reply: more than one Helper frame');
+    // Re-emitting the exact same complete frame is one action, including its raw bytes.
+    const duplicateFrames = frames.length > 1 && frames.every(item => item.frame.kind === 'frame' && item.source.text === frames[0].source.text);
+    if(frames.length!==1&&!duplicateFrames)fail('Ambiguous reply: more than one Helper frame');
     const {frame,source}=frames[0];
     if(frame.kind==='error')fail(frame.error);
     if(frame.prefix.trim())fail('Ambiguous Helper frame source boundary');
-    const otherSources=extracted.sources.filter(item=>item!==source);
+    const acceptedSources=new Set(duplicateFrames?frames.map(item=>item.source):[source]);
+    const otherSources=extracted.sources.filter(item=>!acceptedSources.has(item));
     for(const other of [...otherSources,{text:extracted.remainder}]){
       const extra=analyzeLegacyReply(other.text||'');
       if(extra.kind!=='none'||frameSyntax(other.text||'').kind!=='none')fail('Ambiguous reply: another control source');

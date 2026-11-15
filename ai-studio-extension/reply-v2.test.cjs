@@ -24,12 +24,15 @@ test('CRLF framing and structured argv remain exact',()=>{
   assert.deepEqual(parseCall(text.replaceAll('\n','\r\n'),null,tools),{name:'exec_command',arguments:{cwd:'W:/a',argv:['cmd.exe','/c','echo a:b']}});
 });
 
-test('independent source boundaries reject two equal calls and preserve nesting within raw bodies',()=>{
+test('identical complete frames execute once and preserve nesting within raw bodies',()=>{
   const text=frame('write_file\npath: W:/a\nif_absent: true','{not JSON}\n'+frame('list_allowed_roots'));
   const state=setup();state.chunk.remove();const pre=state.model.children[0].add(new Node('pre',{},text));
   let model=state.adapter.inspect().latestModel;
   assert.equal(parseCall(model.text,null,tools,model).arguments.content,'{not JSON}\n'+frame('list_allowed_roots'));
   state.model.children[0].add(new Node('pre',{},text));model=state.adapter.inspect().latestModel;
+  assert.equal(parseCall(model.text,null,tools,model).arguments.content,'{not JSON}\n'+frame('list_allowed_roots'));
+  state.model.children[0].add(new Node('pre',{},text.replace('W:/a','W:/different')));
+  model=state.adapter.inspect().latestModel;
   assert.throws(()=>parseCall(model.text,null,tools,model),/Ambiguous/);
   pre.remove();
 });
@@ -116,4 +119,15 @@ test('local edit recovery reads the original reply once and invalidates it when 
   assert.equal(opened,1);
   source.textContent=frame('list_allowed_roots');
   assert.equal(state.adapter.inspect().latestModel.sourceBlocks[0].kind,'code');
+});
+
+
+test('re-emitted raw frames are accepted only when every source byte matches',()=>{
+  const raw=frame('write_file\npath: W:/a\nif_absent: true','print("once")\n');
+  const sources=Array.from({length:4},(_,id)=>({id,kind:'code',text:raw}));
+  const options={sessionMarker:marker,sourceBlocks:sources,sourceRemainder:'I will re-emit the same call cleanly.'};
+  assert.equal(parseCall(sources.map(source=>source.text).join('\n'),null,tools,options).arguments.content,'print("once")\n');
+  for(const changed of [raw.replace('once','twice'),raw.replace(marker,'f'.repeat(32)),raw+' ',raw.replace('END_'+marker,'')]){
+    assert.throws(()=>parseCall(raw,null,tools,{...options,sourceBlocks:[sources[0],{id:9,kind:'code',text:changed}]}));
+  }
 });
