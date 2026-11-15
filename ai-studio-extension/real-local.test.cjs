@@ -109,3 +109,27 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   assert.equal(fs.existsSync(path.join(appdata, 'webcodex', 'studio', 'native-host.json')), false);
   assert.equal(fs.existsSync(path.join(appdata, 'webcodex', 'studio', 'settings.json')), false);
 });
+
+
+test('Windows launcher starts the compiled agent from a path containing spaces', {skip: process.env.WEBCODEX_LOCAL_REAL_TEST !== '1' || process.platform !== 'win32', timeout:20000}, async t => {
+  const temp = fs.mkdtempSync(path.resolve(__dirname,'../tmp/launcher smoke '));
+  const executable = process.env.WEBCODEX_TEST_AGENT_PATH || path.resolve(__dirname,'../bin/aix/webcodex-agent.exe');
+  fs.mkdirSync(path.join(temp,'bin/aix'),{recursive:true});
+  fs.copyFileSync(executable,path.join(temp,'bin/aix/webcodex-agent.exe'));
+  fs.copyFileSync(path.resolve(__dirname,'../start-agent.bat'),path.join(temp,'start-agent.bat'));
+  const child = spawn('cmd.exe',['/d','/c','start-agent.bat','--no-pause'],{cwd:temp,windowsHide:true,env:{...process.env,APPDATA:path.join(temp,'appdata'),LOCALAPPDATA:path.join(temp,'localappdata'),WEBCODEX_ALLOWED_ROOTS:temp,WEBCODEX_GATE_URL:'',WEBCODEX_AGENT_TOKEN:''},stdio:['ignore','pipe','pipe']});
+  let output = '';
+  child.stdout.on('data',chunk=>output+=chunk);
+  child.stderr.on('data',chunk=>output+=chunk);
+  t.after(async()=>{
+    if(child.exitCode===null)await new Promise(resolve=>{
+      const killer = spawn('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore'});
+      killer.on('exit',resolve);
+    });
+    await new Promise(resolve=>setTimeout(resolve,100));
+    fs.rmSync(temp,{recursive:true,force:true});
+  });
+  const deadline = Date.now()+10000;
+  while(!output.includes('Studio local ready:') && child.exitCode===null && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));
+  assert.match(output,/Studio local ready:/);
+});

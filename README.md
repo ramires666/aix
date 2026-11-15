@@ -7,4 +7,4 @@ always starts in local mode, including when Gate environment variables are prese
 Gate and previous integrations remain in the repository for future work.
 
 See [installation and update instructions](README.ru.md).
-Historical documentation is preserved in [README.legacy.md](README.legacy.md).
+On Windows, `build-agent.bat` compiles only the local agent and `start-agent.bat` runs it.

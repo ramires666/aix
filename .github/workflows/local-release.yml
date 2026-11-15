@@ -18,16 +18,6 @@ jobs:
         with:
           node-version: '24.11.1'
           package-manager-cache: false
-      - name: Verify compiled local bundle and existing Gate compatibility
+      - name: Verify local AI Studio bundle and retained Gate compatibility
         shell: pwsh
         run: ./ai-studio-extension/verify-release.ps1
-      - name: Verify AI Studio local-only entry point
-        shell: pwsh
-        run: |
-          go test -tags aistudio ./cmd/agent ./internal/buildinfo ./internal/protocol
-          ./build.ps1
-          $env:WEBCODEX_TEST_AGENT_PATH = Join-Path $pwd 'bin/aix/webcodex-agent.exe'
-          $env:WEBCODEX_AIX_LOCAL_ONLY = '1'
-          $env:WEBCODEX_LOCAL_REAL_TEST = '1'
-          node --test ai-studio-extension/real-local.test.cjs
-          if ($LASTEXITCODE -ne 0) { throw 'Local-only bundle test failed' }

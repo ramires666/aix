@@ -1,5 +1,5 @@
 param(
-    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'bin/ai-studio-bridge')
+    [string]$OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'bin/aix')
 )
 $ErrorActionPreference = 'Stop'
 $OutputEncoding = [Text.UTF8Encoding]::new($false)
@@ -52,15 +52,23 @@ try {
     Invoke-Check 'go-vet' 'go' (@('vet') + $packages)
     $agent = Join-Path $output 'webcodex-agent.exe'
     $gate = Join-Path $scratch 'webcodex-gate.exe'
-    Invoke-Check 'build-agent' 'go' @('build','-trimpath','-ldflags',('-X webcodex/internal/buildinfo.Version=' + $release.webcodexRelease.agent),'-o',$agent,'./cmd/agent')
+    $regressionAgent = Join-Path $scratch 'webcodex-agent.exe'
+    Invoke-Check 'build-agent' 'go' @('build','-trimpath','-tags','aistudio','-ldflags',('-X webcodex/internal/buildinfo.Version=' + $release.webcodexRelease.agent),'-o',$agent,'./cmd/agent')
+    Invoke-Check 'build-agent-regression' 'go' @('build','-trimpath','-ldflags',('-X webcodex/internal/buildinfo.Version=' + $release.webcodexRelease.agent),'-o',$regressionAgent,'./cmd/agent')
+    Invoke-Check 'go-local-tests' 'go' @('test','-tags','aistudio','./cmd/agent','./internal/buildinfo','./internal/protocol')
     Invoke-Check 'build-gate-regression' 'go' @('build','-trimpath','-ldflags',('-X webcodex/internal/buildinfo.Version=' + $release.webcodexRelease.gate),'-o',$gate,'./cmd/gate')
     Invoke-Check 'package' 'powershell' @('-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $PSScriptRoot 'package.ps1'),'-OutputDirectory',$output)
-    $env:WEBCODEX_TEST_AGENT_PATH = $agent
+    $env:WEBCODEX_TEST_AGENT_PATH = $regressionAgent
     $env:WEBCODEX_TEST_GATE_PATH = $gate
     foreach ($flag in $flags) { [Environment]::SetEnvironmentVariable($flag, '1', 'Process') }
     Invoke-Check 'required-real-tests' 'node' @('--test','--test-reporter=tap','ai-studio-extension/*.test.cjs')
     $realLog = Get-Content -LiteralPath (Join-Path $scratch 'required-real-tests.log') -Raw
     if ($realLog -notmatch '# skipped 0\b' -or $realLog -notmatch '# fail 0\b') { throw 'Required acceptance contains a skipped or failed test' }
+
+    $env:WEBCODEX_TEST_AGENT_PATH = $agent
+    $env:WEBCODEX_AIX_LOCAL_ONLY = '1'
+    try { Invoke-Check 'local-only-exe' 'node' @('--test','ai-studio-extension/real-local.test.cjs') }
+    finally { Remove-Item Env:WEBCODEX_AIX_LOCAL_ONLY }
 
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archivePath = Join-Path $output 'webcodex-ai-studio-bridge.zip'
@@ -95,16 +103,14 @@ try {
     if (($sourceHashes | ConvertTo-Json -Compress) -ne ($finalHashes | ConvertTo-Json -Compress) -or $sourceCommit -ne (& git rev-parse HEAD).Trim()) { throw 'Source changed during release verification' }
     $artifacts = [ordered]@{}
     $readme = Join-Path $output 'README.ru.md'
-    $installation = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'README.ru.md') -Raw -Encoding UTF8) -split '(?m)^## .*0\.3\.13',2
-    $sourceURL = 'https://github.com/ramires666/webcdx/blob/' + $sourceCommit
-    $installation[0].Replace('(BUILD.ru.md)', '('+$sourceURL+'/ai-studio-extension/BUILD.ru.md)').Replace('(../docs/reliability-coordinator.ru.md)', '('+$sourceURL+'/docs/reliability-coordinator.ru.md)') | Set-Content -LiteralPath $readme -Encoding UTF8
+    Copy-Item -LiteralPath (Join-Path $root 'README.ru.md') -Destination $readme
     foreach ($path in @($agent,$archivePath,$readme)) { $artifacts[[IO.Path]::GetFileName($path)] = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
     $report = [ordered]@{
         sourceCommit=$sourceCommit; sourceDirty=$sourceDirty; builtAtUTC=[DateTime]::UtcNow.ToString('o')
         versions=@{extension=$release.version; agent=$release.webcodexRelease.agent; gateRegression=$release.webcodexRelease.gate; replyProtocols=$release.webcodexRelease.replyProtocols}
         checks=$checks; artifacts=$artifacts; archiveMembers=$members; sourceHashes=$sourceHashes
         tools=@{go=(& go version); node=(& node --version); powershell=$PSVersionTable.PSVersion.ToString()}
-        liveAcceptance='pending stage 11'; publishable=$false
+        liveAcceptance='manual authenticated AI Studio check required'; publishable=$false
     }
     $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $reportPath -Encoding UTF8
     Copy-Item -LiteralPath (Join-Path $scratch 'required-real-tests.log') -Destination (Join-Path $output 'acceptance-tests.txt')
