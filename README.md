@@ -1,10 +1,15 @@
-# AIX for Google AI Studio
+# AIX для Google AI Studio
 
-Chrome extension and a direct local file and command agent for Google AI Studio.
-The current bundle connects over loopback. Build with `./build.ps1` on Windows.
-Ready files are written to `bin/aix`. The agent uses the `aistudio` build tag and
-always starts in local mode, including when Gate environment variables are present.
-Gate and previous integrations remain in the repository for future work.
+AIX соединяет чат Google AI Studio с файлами и командами на вашем компьютере.
 
-See [installation and update instructions](README.ru.md).
-On Windows, `build-agent.bat` compiles only the local agent and `start-agent.bat` runs it.
+## Установка на Windows
+
+[Открыть простую пошаговую инструкцию](README.ru.md).
+
+В инструкции показано, как запустить агент, установить расширение в Chrome,
+подключить чат, выбрать папку с файлами и проверить работу.
+Отдельно описана установка из исходников GitHub.
+
+На этом компьютере проект находится в `W:\_python\aix`.
+Готовый агент уже скомпилирован в `bin/aix/webcodex-agent.exe`.
+Запуск — двойным щелчком по `start-agent.bat`.
