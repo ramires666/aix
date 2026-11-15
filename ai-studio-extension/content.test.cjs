@@ -51,7 +51,7 @@ test('a result sent with native Run is confirmed without another upload or submi
 function harness({manualClock=false}={}) {
   const listeners = {}, sent = [], timers = new Map(), state = { supported: true, generating: false, editorEmpty: true, conversationKey: 'active-chat', latestModel: { text: 'old answer' }, latestUser: null };
   let timerId = 0, now=10000, submitted = [], staged = [], observerCallback, accepted = true, sendHandler, disconnected = false, cleared = false, submitHandler, uploadHandler;
-  const uploaded=[],preparedMarkers=[];let recoveryHandler;
+  const uploaded=[],preparedMarkers=[],collapsed=[];let recoveryHandler;
   class TestDate extends Date {static now(){return now;}}
   const adapter = {
     recoverReplySource:async model=>recoveryHandler?recoveryHandler(model):false,
@@ -71,6 +71,7 @@ function harness({manualClock=false}={}) {
       const raw = unwrapResult(text);
       return JSON.parse(raw).operation_id === operationId && (expectedText === undefined || raw === expectedText);
     }),
+    collapseDelivery:(operationId,expectedText)=>{collapsed.push([operationId,expectedText]);return 1;},
     cleanup: options => cleanups.push(options), restoreCleanup: () => { restores++; }, annotateContext: () => { annotations++; }
   };
   const cleanups=[];let restores=0,annotations=0;
@@ -93,7 +94,7 @@ function harness({manualClock=false}={}) {
     }
     throw Error('timers did not settle');
   };
-  return { setRecoveryHandler:fn=>{recoveryHandler=fn;}, state, sent, staged, submitted, uploaded, preparedMarkers, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
+  return { setRecoveryHandler:fn=>{recoveryHandler=fn;}, state, sent, staged, submitted, uploaded, preparedMarkers, collapsed, setUploadHandler:fn=>{uploadHandler=fn;}, send, flush, advance:ms=>{now+=ms;}, cleanups, get restores(){return restores;}, get annotations(){return annotations;}, setSubmitHandler: fn => { submitHandler = fn; }, tick: () => context.interval(), stopped: () => disconnected && cleared, reload: () => vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8'), context), mutate: () => observerCallback(), click: event => documentListeners.click(event), key: event => documentListeners.keydown(event), run: (runText='Run\nkeyboard_return') => { const button={getAttribute:name=>name==='aria-label'?null:'',innerText:runText,textContent:''};documentListeners.click({target:{closest:()=>button}}); }, setAccepted: value => { accepted = value; }, setSendHandler: fn => { sendHandler = fn; } };
 }
 
 test('current Run keyboard labels prepare the chat marker before the first request',async()=>{
@@ -670,8 +671,10 @@ test('snapshot reports only an exactly parsed visible result as delivery proof',
   const h=harness();await h.send({type:'studio.arm',sessionId:'s1',turnless:true});
   h.state.latestUser={text:'prefix '+JSON.stringify({type:'helper-result',operation_id:'op-visible'})};
   let snap=await h.send({type:'studio.snapshot',sessionId:'s1',operationId:'op-visible'});assert.equal(snap.delivered,false);assert.equal(snap.deliveredOperationId,'');
+  assert.deepEqual(h.collapsed,[]);
   h.state.latestUser={text:JSON.stringify({type:'helper-result',operation_id:'op-visible'})};
   snap=await h.send({type:'studio.snapshot',sessionId:'s1',operationId:'op-visible'});assert.equal(snap.delivered,true);assert.equal(snap.deliveredOperationId,'op-visible');
+  assert.equal(h.collapsed.at(-1)[0],'op-visible');
   h.state.latestUser={text:'User timestamp wrapper',operationId:'op-visible'};
   snap=await h.send({type:'studio.snapshot',sessionId:'s1',operationId:'op-visible'});assert.equal(snap.delivered,true);assert.equal(snap.deliveredOperationId,'op-visible');
   h.state.latestUser={text:'{"type":"helper-result","operation_id":'};

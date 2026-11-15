@@ -230,6 +230,17 @@
     const direct=frameSyntax(text);
     const exactSource=options.sourceBlocks?.length===1&&options.sourceBlocks[0].kind==='reply'?options.sourceBlocks[0].text:undefined;
     const extracted=exactSource!==undefined?framedSources(exactSource,true):options.sourceBlocks?{sources:options.sourceBlocks,remainder:options.sourceRemainder||''}:direct.kind!=='none'?{sources:[{text,kind:'text'}],remainder:''}:framedSources(text);
+    if(options.lastFrame)extracted.sources=extracted.sources.map(source=>{
+      const outer=frameSyntax(source.text,{codeBoundary:source.kind==='code'});
+      // An explicit retry may recover a final header-only call from a broken code fence.
+      // Raw bodies remain opaque, even when they contain frame-looking lines.
+      if(outer.kind!=='frame'||outer.body!==undefined)return source;
+      const headers=[...source.text.matchAll(/^[ \t]*HELPER(?:_[A-Za-z0-9_-]+)?[ \t]+[A-Za-z][\w-]*[ \t]*\r?\n/gm)];
+      if(headers.length<2)return source;
+      const {segments,quoted}=jsonSegments(source.text);
+      const outsideArguments=headers.filter(header=>!segments.some(range=>header.index>=range.start&&header.index<range.end)&&!quoted.some(([start,end])=>header.index>=start&&header.index<end));
+      return outsideArguments.length>1?{...source,text:source.text.slice(outsideArguments[outsideArguments.length-1].index)}:source;
+    });
     const frames=extracted.sources.map(source=>({source,frame:frameSyntax(source.text,{codeBoundary:source.kind==='code'})})).filter(item=>item.frame.kind!=='none');
     if(!frames.length){
       const frame=frameSyntax(text);

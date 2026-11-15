@@ -696,6 +696,45 @@ test('confirms only an exact result envelope in the submitted user turn', () => 
   assert.equal(setup().adapter.hasDelivery('op-1'), true, 'legacy exact marker remains supported');
 });
 
+test('collapses only a proven result once and keeps its operation ID and text readable', () => {
+  const payload='{"type":"helper-result","operation_id":"collapse-me","result":42}';
+  const state=setup();state.user.children=[];state.user._text='';
+  const role=state.user.add(new Node('div',{'data-turn-role':'User'}));
+  const block=role.add(new Node('ms-code-block'));
+  const collapse=block.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const region=block.add(new Node('div'));
+  const code=region.add(new Node('pre')).add(new Node('code',{},payload));
+  const hiddenSibling=block.add(new Node('div',{style:'display:none'},'unrelated hidden source'));
+  collapse.click=()=>{collapse.attrs['aria-label']='Expand code snippet';region.attrs.style='display:none';region.attrs['aria-hidden']='true';};
+  const unrelated=state.model.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const expected=JSON.stringify({type:'helper-result',operation_id:'collapse-me',result:42});
+  assert.equal(state.adapter.collapseDelivery('wrong-id',expected),0);
+  assert.equal(collapse.clicked,undefined);
+  assert.equal(state.adapter.collapseDelivery('collapse-me',expected),1);
+  assert.equal(state.adapter.collapseDelivery('collapse-me',expected),0);
+  const snapshot=state.adapter.inspect();
+  assert.equal(snapshot.latestUser.operationId,'collapse-me');
+  assert.match(snapshot.latestUser.text,/collapse-me/);
+  assert.doesNotMatch(snapshot.latestUser.text,/unrelated hidden source/);
+  assert.equal(hiddenSibling.attrs.style,'display:none');
+  assert.equal(state.adapter.hasDelivery('collapse-me',expected),true);
+  assert.equal(unrelated.clicked,undefined);
+});
+
+test('a result acknowledged after an earlier poll can be collapsed then',()=>{
+  const state=setup();
+  assert.equal(state.adapter.collapseDelivery('late-result'),0);
+  state.user.children=[];state.user._text='';
+  const role=state.user.add(new Node('div',{'data-turn-role':'User'}));
+  const block=role.add(new Node('ms-code-block'));
+  const button=block.add(new Node('button',{'aria-label':'Collapse code snippet'}));
+  const payload='{"type":"helper-result","operation_id":"late-result"}';
+  block.add(new Node('code',{},payload));
+  button.click=()=>{button.attrs['aria-label']='Expand code snippet';};
+  assert.equal(state.adapter.collapseDelivery('late-result'),1);
+  assert.equal(state.adapter.hasDelivery('late-result'),true);
+});
+
 test('proves legacy Markdown-rendered delivery against the exact expected envelope', () => {
   const payload = JSON.stringify({
     type: 'helper-result', v: 1, operation_id: 'op-legacy', name: 'browser',

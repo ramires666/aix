@@ -126,7 +126,7 @@ test('Windows release launcher starts the adjacent EXE from a path containing sp
       killer.on('exit',resolve);
     });
     await new Promise(resolve=>setTimeout(resolve,100));
-    fs.rmSync(temp,{recursive:true,force:true});
+    fs.rmSync(temp,{recursive:true,force:true,maxRetries:5,retryDelay:200});
   });
   const deadline = Date.now()+10000;
   while(!output.includes('Studio local ready:') && child.exitCode===null && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,50));

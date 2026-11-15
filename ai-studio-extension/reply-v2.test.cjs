@@ -143,3 +143,15 @@ test('explicit last-call recovery selects the final complete frame while automat
     assert.throws(()=>parseCall(last,null,tools,{...options,lastFrame:true,sourceBlocks:[options.sourceBlocks[0],{kind:'code',text}]}));
   }
 });
+
+
+test('explicit recovery reads the final header-only call when a malformed fence merged two code widgets',()=>{
+  const first=frame('exec_command\ncwd: W:/a\nargv: ["python", "-c", "print(1)"]');
+  const last=frame('exec_command\ncwd: W:/a\nargv: ["python", "-c", "print(2)"]');
+  const merged=first+'\n~~~~~~~~~~~~~~~~I will read the next part.\n~~~~~~~~~~~~~~~~text\n'+last;
+  const options={sessionMarker:marker,sourceBlocks:[{kind:'code',text:merged}]};
+  assert.throws(()=>parseCall(merged,null,tools,options));
+  assert.deepEqual(parseCall(merged,null,tools,{...options,lastFrame:true}).arguments.argv,['python','-c','print(2)']);
+  const raw=frame('write_file\npath: W:/a\nif_absent: true','file text\n'+last);
+  assert.equal(parseCall(raw,null,tools,{sessionMarker:marker,lastFrame:true,sourceBlocks:[{kind:'code',text:raw}]}).arguments.content,'file text\n'+last);
+});

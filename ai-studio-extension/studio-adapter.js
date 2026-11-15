@@ -76,17 +76,31 @@
   const sourceIDs=new WeakMap(),responseRevisions=new WeakMap(),recoveredReplies=new WeakMap();
   let nextSourceID=0,nextRevision=0;
   const sourceID=node=>{if(!sourceIDs.has(node))sourceIDs.set(node,++nextSourceID);return sourceIDs.get(node);};
-  const answerCopy = (el) => {
+  const answerCopy = (el, preserveCollapsedCode = false) => {
     const copy=el.cloneNode?el.cloneNode(true):el;
     if(copy===el||!copy.querySelectorAll)return copy;
     const originals=[el,...el.querySelectorAll('*')],copies=[copy,...copy.querySelectorAll('*')];
+    const collapsedCodeNodes=new Set();
+    if(preserveCollapsedCode){
+      for(const widget of allElements('ms-code-block',el)){
+        if(!allElements('button',widget).some(button=>hasLabel(button,['expand code snippet'])))continue;
+        for(const code of allElements('pre, code, [role="code"]',widget)){
+          for(let node=code;node;node=node.parentElement||node.parent){
+            collapsedCodeNodes.add(node);
+            if(node===widget)break;
+          }
+        }
+      }
+    }
     for(let i=0;i<originals.length;i++)if(copies[i])copies[i].helperSourceNode=originals[i];
     for(let i=1;i<originals.length;i++){
       const source=originals[i];let style;
       try{style=document.defaultView?.getComputedStyle?.(source);}catch{}
       if(copies[i])copies[i].helperBlockBoundary=/^(?:block|flex|grid|flow-root|table|list-item)/.test(style?.display||'');
       const inline=attr(source,'style')||'';
-      if(source.hidden||attr(source,'hidden')!==null||attr(source,'aria-hidden')==='true'||style?.display==='none'||style?.visibility==='hidden'||/(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(inline))copies[i]?.remove();
+      const hidden=source.hidden||attr(source,'hidden')!==null||attr(source,'aria-hidden')==='true'||style?.display==='none'||style?.visibility==='hidden'||/(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(inline);
+      const collapsedCode=collapsedCodeNodes.has(source);
+      if(hidden&&!collapsedCode)copies[i]?.remove();
     }
     for(const node of copy.querySelectorAll('ms-thought-accordion, ms-thought-chunk, [data-thought="true"], [data-is-thought="true"], [data-role="thought"], [data-webcodex-context], button, [role="button"], mat-icon, svg, .material-icons, .material-symbols-outlined'))node.remove();
     for(const node of copy.querySelectorAll('details')){
@@ -114,7 +128,7 @@
     const value=node.childNodes?Array.from(node.childNodes,child=>modelText(child,excluded)).join(''):String(node.textContent||'');
     return blockTags.has(tag)||node.helperBlockBoundary?'\n'+value+'\n':value;
   };
-  const finalText = (el) => String(answerCopy(el).textContent||'').trim();
+  const finalText = (el) => String(answerCopy(el,true).textContent||'').trim();
   const chatMarkers = recognized => recognized.filter(el=>role(el)==='user').map(el=>{
     const body=userBody(el),chunks=allElements('ms-prompt-chunk.text-chunk',body);
     const raw=modelText(answerCopy(chunks[0]||body)).trimStart();
@@ -140,7 +154,7 @@
     return bodies.length===1?bodies[0]:el;
   };
   const resultSources = (el) => {
-    const copy=answerCopy(userBody(el));
+    const copy=answerCopy(userBody(el),true);
     for(const chunk of allElements('ms-prompt-chunk',copy))if(!chunk.matches?.('.text-chunk'))chunk.remove();
     for(const asset of allElements('ms-prompt-attachment, ms-file-preview, ms-attachment, .attachment, .file-preview, .file-chip, [data-file-name], [data-attachment-id]',copy))asset.remove();
     const code=sourceBlocks(copy).blocks.map(block=>block.text);
@@ -566,6 +580,17 @@
     });
   };
   const hasDelivery = (operationId, expectedText) => deliveryTurns(operationId, expectedText).length > 0;
+  const collapsedDeliveries=new WeakSet();
+  const collapseDelivery = (operationId, expectedText) => {
+    let count=0;
+    for(const turn of deliveryTurns(operationId,expectedText)){
+      if(collapsedDeliveries.has(turn))continue;
+      const buttons=elements('button',turn).filter(button=>hasLabel(button,['collapse code snippet']));
+      if(buttons.length!==1)continue;
+      buttons[0].click();collapsedDeliveries.add(turn);count++;
+    }
+    return count;
+  };
   const hiddenByUs = new Map();
   const cleanup = ({ turns: requestedTurns = [], operationIds = [] } = {}) => {
     const recognized = new Set(turns());
@@ -613,5 +638,5 @@
     return count;
   };
   if(document.querySelectorAll?.('[data-webcodex-context]').length)annotateContext();
-  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, cleanup, restoreCleanup, annotateContext };
+  return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, collapseDelivery, cleanup, restoreCleanup, annotateContext };
 });

@@ -171,6 +171,22 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   textChunk.append(resultCode.cloneNode(true));
   if(adapter.inspect().latestUser.operationId||adapter.hasDelivery('restored-result',expectedResult))throw Error('duplicate user control sources were accepted');cases++;
   restoredUser.remove();
+  const collapsedUser=document.createElement('ms-chat-turn');collapsedUser.setAttribute('data-turn-role','User');
+  const collapsedWidget=document.createElement('ms-code-block'),nativeButton=document.createElement('button'),collapsedRegion=document.createElement('div');
+  const collapsedExpected=JSON.stringify({type:'helper-result',operation_id:'collapsed-result',result:{ok:true}});
+  nativeButton.setAttribute('aria-label','Collapse code snippet');
+  const collapsedSource=document.createElement('pre');collapsedSource.textContent=collapsedExpected;collapsedRegion.append(collapsedSource);
+  const unrelatedHidden=document.createElement('span');unrelatedHidden.style.display='none';unrelatedHidden.textContent='unrelated hidden text';
+  collapsedWidget.append(nativeButton,collapsedRegion,unrelatedHidden);collapsedUser.append(collapsedWidget);document.body.append(collapsedUser);
+  let nativeClicks=0;nativeButton.addEventListener('click',()=>{nativeClicks++;if(nativeButton.getAttribute('aria-label')==='Collapse code snippet'){nativeButton.setAttribute('aria-label','Expand code snippet');collapsedRegion.setAttribute('aria-hidden','true');collapsedRegion.style.display='none';}else{nativeButton.setAttribute('aria-label','Collapse code snippet');collapsedRegion.removeAttribute('aria-hidden');collapsedRegion.style.display='';}});
+  if(adapter.inspect().latestUser.operationId!=='collapsed-result'||adapter.collapseDelivery('collapsed-result',collapsedExpected)!==1)throw Error('native result did not collapse after exact delivery proof');
+  let collapsedSnapshot=adapter.inspect();
+  if(collapsedSnapshot.latestUser.operationId!=='collapsed-result'||!collapsedSnapshot.latestUser.text.includes('collapsed-result')||!adapter.hasDelivery('collapsed-result',collapsedExpected)||collapsedSnapshot.latestUser.text.includes('unrelated hidden text'))throw Error('native collapse hid result proof or preserved unrelated hidden text');
+  nativeButton.click();
+  if(adapter.collapseDelivery('collapsed-result',collapsedExpected)!==0||nativeClicks!==2||nativeButton.getAttribute('aria-label')!=='Collapse code snippet')throw Error('manual re-expansion was automatically collapsed again');
+  collapsedSnapshot=adapter.inspect();
+  if(collapsedSnapshot.latestUser.operationId!=='collapsed-result'||!adapter.hasDelivery('collapsed-result',collapsedExpected))throw Error('manual re-expansion changed result proof');cases++;
+  collapsedUser.remove();
   for(const width of [360,768,1200]){
     document.body.style.width=width+'px';document.body.style.maxWidth='100%';
     answer.replaceChildren();answer.style.display='flex';
@@ -198,5 +214,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:97');t.diagnostic('97 scenarios passed in installed Chrome, including context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
+  assert.equal(result,'PASS:98',output.slice(-3000));t.diagnostic('98 scenarios passed in installed Chrome, including collapsed-result proof retention and manual re-expansion, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });
