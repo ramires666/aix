@@ -1,31 +1,32 @@
+# Ready bundles and local build output
 /bin/
-/backups/
-/logs/
-third_party/codex/.git/
-third_party/codex/**/target/
-third_party/codex/node_modules/
-third_party/codex/**/node_modules/
-*.log
-*.logs
-.env
-.env.*
-!.env.example
-data/
-dev-data/
-/tmp/
-/ai-studio-extension/node_modules/
-/.kilo/
-*.db
-*.sqlite
-*.sqlite3
-
-# Agent scripts and binaries
-start-agent-thunderfull.bat
-start-agent-*.bat
-webcodex-agent.exe
+/dist/
+/staging/
+/*.zip
 *.exe
 *~
 
-# Python capture tooling cache
+# Temporary data, local logs and caches
+/tmp/
+/logs/
+/backups/
+*.log
+*.logs
 __pycache__/
 *.py[cod]
+**/node_modules/
+
+# Local credentials and runtime settings
+.env
+.env.*
+!.env.example
+/data/
+/dev-data/
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Personal launchers may contain machine-specific paths or credentials
+start-agent-*.bat

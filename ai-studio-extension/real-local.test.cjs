@@ -111,11 +111,10 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
 });
 
 
-test('Windows launcher starts the compiled agent from a path containing spaces', {skip: process.env.WEBCODEX_LOCAL_REAL_TEST !== '1' || process.platform !== 'win32', timeout:20000}, async t => {
+test('Windows release launcher starts the adjacent EXE from a path containing spaces', {skip: process.env.WEBCODEX_LOCAL_REAL_TEST !== '1' || process.platform !== 'win32', timeout:20000}, async t => {
   const temp = fs.mkdtempSync(path.resolve(__dirname,'../tmp/launcher smoke '));
   const executable = process.env.WEBCODEX_TEST_AGENT_PATH || path.resolve(__dirname,'../bin/aix/webcodex-agent.exe');
-  fs.mkdirSync(path.join(temp,'bin/aix'),{recursive:true});
-  fs.copyFileSync(executable,path.join(temp,'bin/aix/webcodex-agent.exe'));
+  fs.copyFileSync(executable,path.join(temp,'webcodex-agent.exe'));
   fs.copyFileSync(path.resolve(__dirname,'../start-agent.bat'),path.join(temp,'start-agent.bat'));
   const child = spawn('cmd.exe',['/d','/c','start-agent.bat','--no-pause'],{cwd:temp,windowsHide:true,env:{...process.env,APPDATA:path.join(temp,'appdata'),LOCALAPPDATA:path.join(temp,'localappdata'),WEBCODEX_ALLOWED_ROOTS:temp,WEBCODEX_GATE_URL:'',WEBCODEX_AGENT_TOKEN:''},stdio:['ignore','pipe','pipe']});
   let output = '';

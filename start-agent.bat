@@ -1,12 +1,14 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if not exist "bin\aix\webcodex-agent.exe" (
-    echo Agent EXE is missing. Run build-agent.bat first.
+set "agentPath=%~dp0webcodex-agent.exe"
+if not exist "%agentPath%" set "agentPath=%~dp0bin\aix\webcodex-agent.exe"
+if not exist "%agentPath%" (
+    echo Agent EXE is missing. Check that you extracted the complete release ZIP.
     if /i not "%~1"=="--no-pause" pause
     exit /b 1
 )
-"bin\aix\webcodex-agent.exe" --local
+"%agentPath%" --local
 set "agentResult=%errorlevel%"
 if not "%agentResult%"=="0" if /i not "%~1"=="--no-pause" pause
 exit /b %agentResult%
