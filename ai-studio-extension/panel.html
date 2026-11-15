@@ -11,7 +11,8 @@
   <main>
     <header>
       <h1>WebCodex Bridge</h1>
-      <p id="extension-version">AI Studio · alpha 0.4.3</p>
+      <p id="extension-version">AI Studio · alpha 0.4.4</p>
+      <div class="row"><button id="arm" type="button">Запустить сеанс</button></div>
     </header>
     <p id="status" role="status" aria-live="polite">Загрузка состояния…</p>
     <p id="transport-info" class="hint" hidden></p>
@@ -19,7 +20,7 @@
     <p id="observer-status" class="hint" role="status" aria-live="polite" hidden></p>
     <p id="error" class="error" role="alert" aria-live="assertive" hidden></p>
 
-    <section aria-labelledby="gate-heading">
+    <section id="gate-connection" aria-labelledby="gate-heading" hidden>
       <h2 id="gate-heading">Подключение</h2>
       <p class="hint">Сначала подключается локальный агент. Если он недоступен, используется сохранённое подключение к Gate. Команда с неизвестным исходом через другой канал не повторяется.</p>
       <label for="gate-url">Адрес Gate</label>
@@ -37,8 +38,9 @@
 
     <section aria-labelledby="session-heading">
       <h2 id="session-heading">Сеанс</h2>
-      <p>Агент</p>
+      <p>Локальный агент</p>
       <div id="agents" class="choices" aria-label="Выбор агента"></div>
+      <button id="allow-all" type="button">Разрешить всё</button>
       <p>Разрешённые инструменты</p>
       <div id="tools" class="choices" aria-label="Разрешённые инструменты"></div>
       <p id="tools-next-session" class="hint" hidden>Выбор инструментов применяется к следующему сеансу.</p>
@@ -53,7 +55,6 @@
       <textarea id="instructions" rows="4" readonly aria-describedby="instructions-help"></textarea>
       <p id="instructions-help" class="hint">Правила сохраняются в System instructions. Поле чата остаётся свободным для вашей задачи; Active turn и ID в запросе не нужны.</p>
       <div class="row">
-        <button id="arm" type="button">Запустить сеанс</button>
         <button id="save-instructions" type="button" class="secondary">Обновить инструкции</button>
         <button id="save-from-reply" type="button" class="secondary">Сохранить файл из ответа</button>
       </div>

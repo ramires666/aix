@@ -5,7 +5,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const WebCodexProtocol=require('./protocol.js');
 
-function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=false,oauthSuccess=false,bridgeAuto,operations={},storage={}}={}){
+function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=false,gateEnabled=true,oauthSuccess=false,bridgeAuto,operations={},storage={}}={}){
   const listeners={},sessionStore={},localStore={bridgeAutoSetupV1:true,...(bridgeAuto?{bridgeAuto}:{}),...(gateAuth?{bridgeAuth:{gateUrl:'https://gate.example',clientId:'id',accessToken:'token'}}:{}),...structuredClone(storage)},calls={local:0,gate:0};let disconnectLocal=false;
   const event=fn=>({addListener:fn});
   const chrome={runtime:{getURL:p=>'chrome-extension://test/'+p,onMessage:event(fn=>listeners.message=fn)},storage:{session:{setAccessLevel:async()=>{},get:async k=>({[k]:structuredClone(sessionStore[k])}),set:async x=>Object.assign(sessionStore,structuredClone(x))},local:{setAccessLevel:async()=>{},get:async k=>({[k]:structuredClone(localStore[k])}),set:async x=>Object.assign(localStore,structuredClone(x)),remove:async k=>delete localStore[k]}},action:{onClicked:event(()=>{})},sidePanel:{open:async()=>{}},alarms:{create(){},onAlarm:event(fn=>listeners.alarm=fn)},permissions:{contains:async()=>true},tabs:{get:async()=>({url:'https://aistudio.google.com/app/prompts/a'}),sendMessage:async()=>({supported:true,ok:true,conversationKey:'chat'})},identity:{getRedirectURL:()=> 'https://extension.test/callback',launchWebAuthFlow:async({url})=>{if(!oauthSuccess)throw Error('OAuth cancelled');const auth=new URL(url);return 'https://extension.test/callback?state='+auth.searchParams.get('state')+'&iss='+encodeURIComponent(auth.origin)+'&code=code'}}};
@@ -28,10 +28,35 @@ function harness({session={},localAvailable=true,gateAvailable=true,gateAuth=fal
   const gate={createClient:()=>({initialize:async()=>{calls.gate++;if(!gateAvailable)throw Error('gate offline');return{}},listTools:async()=>[{name:'read_file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}}],listAgents:async()=>[{id:'remote',online:true}],createOperation:async()=>{calls.gate++;return{content:[{type:'text',text:'gate'}]}},getOperation:async()=>({}),rpc:async()=>({})})};
   if(operations.gateClientFactory)gate.createClient=operations.gateClientFactory;
   const context={chrome,crypto:require('node:crypto').webcrypto,URL,URLSearchParams,TextEncoder,TextDecoder,Uint8Array,ArrayBuffer,JSON,Promise,Set,Map,Date,AbortSignal,AbortController,Math,Error,String,Object,Number,RegExp,console,btoa:s=>Buffer.from(s,'binary').toString('base64'),fetch:async()=>({ok:true,text:async()=>JSON.stringify({access_token:'new-token'})}),WebCodexProtocol, WebCodexSession:require('./session-state.js'), WebCodexAttachments:require('./attachments.js'),WebCodexMCP:gate,WebCodexLocal:native,importScripts(){},setTimeout,clearTimeout};
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'background.js'),'utf8'),context,{filename:'background.js'});
+  const source=fs.readFileSync(path.join(__dirname,'background.js'),'utf8');
+  vm.runInNewContext(gateEnabled?source.replace('const GATE_ENABLED = false;','const GATE_ENABLED = true;'):source,context,{filename:'background.js'});
   return{listeners,sessionStore,localStore,calls,chrome,disconnectLocal:()=>{disconnectLocal=true;}};
 }
 function message(h,msg){return new Promise(resolve=>h.listeners.message(msg,{url:'chrome-extension://test/panel.html'},resolve));}
+
+test('production local-only build ignores saved remote authorization and never starts OAuth',async()=>{
+  assert.match(fs.readFileSync(path.join(__dirname,'background.js'),'utf8'),/const GATE_ENABLED = false;/);
+  for(const localAvailable of [false,true]){
+    const h=harness({gateEnabled:false,gateAuth:true,localAvailable,oauthSuccess:true});
+    let oauthCalls=0;h.chrome.identity.launchWebAuthFlow=async()=>{oauthCalls++;throw Error('unexpected OAuth');};
+    const status=await message(h,{type:'bridge.status'});
+    assert.equal(status.state.connected,localAvailable);
+    assert.notEqual(status.state.transport,'gate');
+    const attempt=await message(h,{type:'bridge.connect',configureGate:true,gateUrl:'https://gate.example',clientId:'client'});
+    assert.equal(attempt.ok,localAvailable);
+    assert.equal(h.calls.gate,0);assert.equal(oauthCalls,0);
+  }
+});
+
+test('production local-only build preserves a remote operation without replaying it locally',async()=>{
+  const session=recoveringLocal();session.session.transport='gate';session.session.agentId='remote';session.session.operationId='remote-operation';
+  const h=harness({gateEnabled:false,session,gateAuth:true});
+  const result=await message(h,{type:'bridge.status'}),saved=result.state.session;
+  assert.equal(saved.phase,'paused');assert.equal(saved.resumeBlocked,true);
+  assert.equal(saved.operationKey,'saved-key');assert.equal(saved.operationId,'remote-operation');
+  assert.equal(saved.pendingCall.name,'read_file');assert.equal(h.calls.gate,0);
+  await recoverOnce(h);assert.equal(h.calls.creates||0,0);assert.equal(h.calls.gate,0);
+});
 
 function recoveringLocal(paused=false){
   return {session:{phase:paused?'paused':'recovering',pausedPhase:paused?'recovering':'',transport:'local',

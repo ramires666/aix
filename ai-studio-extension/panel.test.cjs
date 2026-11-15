@@ -24,6 +24,7 @@ function createPanel(store = {}, options = {}) {
   const chrome = { runtime: { id: 'test', getManifest:()=>({version:options.manifestVersion||'0.3.13'}), lastError: null, sendMessage(msg, cb) {
     messages.push(msg);
     if (msg.type === 'bridge.status') return cb({ ok: true, state: snapshot });
+    if (msg.type === 'bridge.cleanupPreference') { snapshot.hideServiceMessages=msg.enabled; return cb({ok:true,state:snapshot}); }
     if (msg.type === 'bridge.preferences') { store.autoSettings = msg; snapshot.autoSettings = msg; return cb({ ok: true, state: snapshot }); }
     if (msg.type === 'bridge.connect') connectCount++;
     if (msg.type === 'bridge.connect' && options.connectReply) return options.connectReply.promise.then(reply => cb(reply));
@@ -42,6 +43,28 @@ test('service JSON preference reflects state and sends both checkbox values', as
   await p.change('hide-service', false);
   await p.change('hide-service', true);
   assert.deepEqual(p.messages.filter(x => x.type === 'bridge.cleanupPreference').map(x => x.enabled), [false, true]);
+});
+
+test('quick controls follow the version and local agent while allow-all persists every checkbox',async()=>{
+  const html=fs.readFileSync(require.resolve('./panel.html'),'utf8');
+  assert.ok(html.indexOf('id="extension-version"')<html.indexOf('id="arm"'));
+  assert.ok(html.indexOf('id="arm"')<html.indexOf('id="status"'));
+  assert.ok(html.indexOf('id="agents"')<html.indexOf('id="allow-all"'));
+  assert.ok(html.indexOf('id="allow-all"')<html.indexOf('id="tools"'));
+  assert.equal((html.match(/id="arm"/g)||[]).length,1);
+  const panel=createPanel();
+  await panel.update({connected:true,transport:'local',session:{phase:'idle'},agents:[{id:'local'}],tools:[{name:'read_file'},{name:'write_file'},{name:'exec_command'}],autoSettings:{agentId:'local',toolNames:['read_file'],consent:false,automatic:false,autoApprove:false,attachFiles:false}});
+  await panel.click('allow-all');
+  for(const id of ['consent','automatic','attach-files','auto-approve','hide-service'])assert.equal(panel.get(id).checked,true,id);
+  assert.equal(panel.get('tools').querySelectorAll('input').every(input=>input.checked),true);
+  const preferences=panel.messages.find(message=>message.type==='bridge.preferences');
+  assert.equal(preferences.field,undefined);
+  assert.deepEqual(Array.from(preferences.toolNames),['read_file','write_file','exec_command']);
+  for(const key of ['consent','automatic','attachFiles','autoApprove'])assert.equal(preferences[key],true);
+  assert.equal(panel.get('arm').disabled,false);
+  assert.equal(panel.messages.some(message=>message.type==='bridge.arm'),false);
+  await panel.ready();
+  for(const id of ['consent','automatic','attach-files','auto-approve','hide-service'])assert.equal(panel.get(id).checked,true,id);
 });
 
 test('resume identifies the currently selected tab for saved-chat recovery',async()=>{
@@ -287,14 +310,16 @@ test('late saved consent hydrates during an active session without replacing act
   assert.equal(p.get('automatic').checked, false);
 });
 
-test('local connection shows the received agent version and allows configuring Gate fallback', async () => {
+test('local connection shows the received agent version with Gate configuration hidden', async () => {
   const p = createPanel();
   await p.ready();
   await p.update({ connected: true, transport: 'local', agentVersion: 'received-version', session: { phase: 'idle' }, tools: [], agents: [] });
   assert.match(p.get('status').textContent, /Локальный агент подключён/);
   assert.match(p.get('transport-info').textContent, /received-version/);
   assert.equal(p.get('connect').disabled, false);
-  assert.equal(p.get('connect').textContent, 'Настроить резерв Gate');
+  assert.equal(p.get('gate-connection').hidden, true);
+  assert.doesNotMatch(p.get('transport-info').textContent, /Gate/);
+  assert.equal(p.get('connect').textContent, 'Подключить');
   await p.input('gate-url', 'https://gate.example');
   await p.click('connect');
   assert.equal(p.messages.find(m => m.type === 'bridge.connect').configureGate, true);
@@ -339,4 +364,14 @@ test('arming Gate intersects remembered tool choices with its currently availabl
   const request=panel.messages.find(message=>message.type==='bridge.arm');
   assert.deepEqual(Array.from(request.toolNames),available);assert.equal(request.consent,true);assert.equal(request.automatic,true);assert.equal(request.autoApprove,true);
   assert.equal(panel.get('tools').querySelectorAll('input:checked').length,14);
+});
+
+
+test('Gate connection fields stay hidden and remote agents are absent from local-only panel',async()=>{
+  const html=fs.readFileSync(require.resolve('./panel.html'),'utf8');
+  assert.match(html,/<section id="gate-connection"[^>]* hidden>/);
+  const panel=createPanel();
+  await panel.update({connected:true,transport:'gate',gateUrl:'https://gate.example',session:{phase:'idle'},agents:[{id:'remote',name:'Gate agent'}],tools:[]});
+  assert.equal(panel.get('gate-connection').hidden,true);assert.equal(panel.get('agents').hidden,true);
+  assert.equal(panel.get('agents').querySelectorAll('input').length,0);assert.doesNotMatch(panel.get('status').textContent,/Gate/);
 });

@@ -1,5 +1,6 @@
 importScripts('vendor/json-tools.js', 'protocol.js', 'session-state.js', 'attachments.js', 'mcp-client.js', 'local-client.js');
 const KEY = 'webcodexState', LARGE_KEY='webcodexLargeSessionState', DURABLE_KEY='webcodexDurableState', SAFE = new Set(['list_agents','list_allowed_roots','list_directory','read_file','search_files','find_files','poll_command','list_commands']);
+const GATE_ENABLED = false;
 let state = {connected:false,transport:'',localError:'',gateUrl:'',clientId:'',agents:[],tools:[],session:{phase:'idle',transport:'',agentId:'',toolNames:[],automatic:false,paused:false,turn:'',instructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:null}};
 let token = '', client = null, localClient = null, gateClient = null, serial = Promise.resolve(), demo = false, connecting = false, lastAutoRefresh = 0, lastAutoRefreshOK = false, autoToolsAvailable = true;
 let restoreError='',authorizationRevision=0,approvalRevision=0,automaticRevision=0,interruptWrites=Promise.resolve();
@@ -17,7 +18,7 @@ async function save() {
     if(!/quota|QUOTA_BYTES|size/i.test(String(error.message||error)))throw error;
     await chrome.storage.session.set({[KEY]:{durableState:true}});
   }
-  if(state.connected&&state.accessToken&&!state.demoMode)await chrome.storage.local.set({bridgeAuth:{gateUrl:state.gateUrl,clientId:state.clientId,accessToken:state.accessToken}});
+  if(GATE_ENABLED&&state.connected&&state.accessToken&&!state.demoMode)await chrome.storage.local.set({bridgeAuth:{gateUrl:state.gateUrl,clientId:state.clientId,accessToken:state.accessToken}});
 }
 function enqueue(fn) { const p=serial.then(fn); serial=p.catch(()=>{}); return p; }
 async function saveAutoSettings(settings,{setup=false}={}){
@@ -80,6 +81,19 @@ async function restore() {
     const {bridgeAuto}=await chrome.storage.local.get('bridgeAuto');state.autoSettings=bridgeAuto?{...bridgeAuto,autoApprove:!!bridgeAuto.autoApprove}:{enabled:false,autoApprove:false};
     state.session.autoApprove=Object.hasOwn(state.session,'autoApprove')?!!state.session.autoApprove:state.autoSettings.autoApprove;
     state.hideServiceMessages=!!(await chrome.storage.local.get('hideServiceMessages')).hideServiceMessages;
+    if(!GATE_ENABLED){
+      const s=state.session;
+      if(s.transport==='gate'&&!['idle','stopped'].includes(s.phase)){
+        if(s.pendingCall||s.operationKey||s.operationId||s.resultText||s.effect||s.dispatchArgs||s.attachments?.length){
+          if(s.phase!=='paused')s.pausedPhase=s.phase;
+          s.phase='paused';s.paused=true;s.resumeBlocked=true;s.reasonCode='gate_disabled';s.error='Прежнее подключение недоступно. Сохранённая операция приостановлена. Остановите этот сеанс для работы с локальным агентом.';
+        }else state.session={phase:'idle',transport:'',agentId:'',toolNames:[],automatic:false,paused:false,turn:'',instructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:null};
+      }
+      token='';client=null;gateClient=null;state.connected=false;state.transport='';state.accessToken='';state.agents=[];state.tools=[];
+      if(state.demoMode){demo=true;state.transport='demo';return;}
+      try{await initializeLocal();}catch(e){state.localError=String(e.message||e);state.connected=false;state.transport='';client=null;state.agents=[];state.tools=[];}
+      await save();return;
+    }
     let fresh=false;
     if(!state.accessToken&&!state.demoMode){const {bridgeAuth}=await chrome.storage.local.get('bridgeAuth');if(bridgeAuth?.accessToken){Object.assign(state,bridgeAuth);state.connected=true;fresh=true;}}
     token=state.accessToken||'';demo=!!state.demoMode;
@@ -133,6 +147,7 @@ async function usePinnedClient(s=state.session){
     client=localClient;return client;
   }
   if(s.transport==='gate'){
+    if(!GATE_ENABLED)throw Error('Прежнее подключение недоступно. Сохранённая операция приостановлена.');
     if(!token&&state.accessToken)token=state.accessToken;
     if(!token)throw Error('Gate connection is unavailable; its saved operation was not sent to the local agent');
     if(!gateClient)gateClient=WebCodexMCP.createClient({baseUrl:state.gateUrl,token});
@@ -144,7 +159,7 @@ async function ensureNewTransport(){
   if(demo)return;
   if(state.transport==='local'&&state.connected&&localClient){client=localClient;return;}
   try{await initializeLocal();return;}catch(e){state.localError=String(e.message||e);}
-  if(token&&state.gateUrl){gateClient=gateClient||WebCodexMCP.createClient({baseUrl:state.gateUrl,token});const init=await gateClient.initialize();client=gateClient;state.transport='gate';state.connected=true;state.gateVersion=init?.serverInfo?.version||'';state.gateInstructions=init?.instructions||'';state.agents=await gateClient.listAgents();state.tools=(await gateClient.listTools()).filter(t=>!t.name.startsWith('browser_'));await selectGateFallbackAgent();return;}
+  if(GATE_ENABLED&&token&&state.gateUrl){gateClient=gateClient||WebCodexMCP.createClient({baseUrl:state.gateUrl,token});const init=await gateClient.initialize();client=gateClient;state.transport='gate';state.connected=true;state.gateVersion=init?.serverInfo?.version||'';state.gateInstructions=init?.instructions||'';state.agents=await gateClient.listAgents();state.tools=(await gateClient.listTools()).filter(t=>!t.name.startsWith('browser_'));await selectGateFallbackAgent();return;}
   state.connected=false;state.transport='';client=null;
 }
 chrome.storage.session.setAccessLevel({accessLevel:'TRUSTED_CONTEXTS'}).catch(()=>{});
@@ -290,6 +305,11 @@ async function command(m) {
   await save();return publicState();
 }
 async function connect({gateUrl,clientId,configureGate=false}) {
+  if(!GATE_ENABLED){
+    await ensureNewTransport();
+    if(!state.connected)throw Error(state.localError||'Запустите локальный агент');
+    return;
+  }
   if(state.session.phase!=='stopped'&&state.session.resumeBlocked&&state.session.pendingCall)throw Error('Stop the paused session before reconnecting; its operation will not be retried automatically');
   if(configureGate&&state.session.transport==='gate'&&!['idle','stopped'].includes(state.session.phase))throw Error('Stop the active Gate session before changing its fallback connection');
   if(!configureGate&&(!state.connected||state.transport!=='local'))try{await ensureNewTransport();}catch(e){state.localError=String(e.message||e);}

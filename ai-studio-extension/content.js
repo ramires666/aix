@@ -6,7 +6,7 @@
   window.__webcodexBridgeDispose?.();
   window.__webcodexBridgeLoaded = true;
   const adapter=WebCodexStudio.createAdapter(document,location);
-  const contentVersion='0.4.3';
+  const contentVersion='0.4.4';
   const pageInstance=Date.now()+'-'+Math.random();
   let sessionMarker='';
   let sessionId='', baselineText='', conversationKey='', lastText='', lastDelivered='', inFlight='', observerTimer=0, stopping=false, newChatPending=false, newChatRequestInFlight=false, attempted=new Set(), recoverTurn='', recoverTools=[], turnless=false, turnlessRecovery=false, observedUserText='', observedResultId='', observedContext='';
@@ -207,7 +207,7 @@
         reply({ok:true,text:s.latestModel.text,sourceBlocks:s.latestModel.sourceBlocks,sourceRemainder:s.latestModel.sourceRemainder,pageInstance,conversationKey:s.conversationKey});
       })().catch(error=>reply({ok:false,error:String(error.message||error)}));return true;
     }
-    if(m.type==='studio.cleanup'){if(m.final)adapter.annotateContext();if(!m.enabled)adapter.restoreCleanup();else if(m.final)adapter.cleanup({turns:[...serviceNodes],operationIds:m.operationIds||[]});reply({ok:true});return;}
+    if(m.type==='studio.cleanup'){if(m.final||!adapter.inspect().generating)adapter.annotateContext();if(!m.enabled)adapter.restoreCleanup();else if(m.final)adapter.cleanup({turns:[...serviceNodes],operationIds:m.operationIds||[]});reply({ok:true});return;}
     if(m.type==='studio.disarm'){resetReply();sessionId='';sessionMarker='';inFlight='';allowedFollowupId='';reply({ok:true});return;}
     if(m.type==='studio.stage'){
       if(systemStagePending){reply({ok:false,error:'System instructions are already being checked'});return;}

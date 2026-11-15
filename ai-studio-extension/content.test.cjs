@@ -529,15 +529,19 @@ test('cleanup annotates final answers, hides accepted service turns, and leaves 
   const h=harness();const turn={};
   await h.send({type:'studio.arm',sessionId:'s1',hideServiceMessages:true});
   h.state.latestModel={text:'```helper-call\n{}\n```',element:turn};h.setAccepted(false);h.mutate();await h.flush();
+  h.state.generating=true;
   await h.send({type:'studio.cleanup',sessionId:'s1',enabled:true,final:false,operationIds:[]});
   assert.equal(h.cleanups.length,0);assert.equal(h.annotations,0);
+  h.state.generating=false;
+  await h.send({type:'studio.cleanup',sessionId:'s1',enabled:true,final:false,operationIds:[]});
+  assert.equal(h.cleanups.length,0);assert.equal(h.annotations,1);
   await h.send({type:'studio.cleanup',sessionId:'s1',enabled:true,final:true,operationIds:['op-1']});
-  assert.equal(h.cleanups.length,1);assert.deepEqual(Array.from(h.cleanups[0].turns),[]);assert.deepEqual(h.cleanups[0].operationIds,['op-1']);assert.equal(h.annotations,1);
+  assert.equal(h.cleanups.length,1);assert.deepEqual(Array.from(h.cleanups[0].turns),[]);assert.deepEqual(h.cleanups[0].operationIds,['op-1']);assert.equal(h.annotations,2);
   h.setAccepted(true);h.mutate();await h.flush();
   await h.send({type:'studio.cleanup',sessionId:'s1',enabled:true,final:true,operationIds:[]});
   assert.deepEqual(Array.from(h.cleanups[1].turns),[turn]);
   await h.send({type:'studio.cleanup',sessionId:'s1',enabled:false,final:true,operationIds:[]});
-  assert.equal(h.restores,1);assert.equal(h.annotations,3);assert.equal(h.cleanups.length,2);
+  assert.equal(h.restores,1);assert.equal(h.annotations,4);assert.equal(h.cleanups.length,2);
 });
 
 test('turnless system-only stage preserves an occupied prompt', async () => {

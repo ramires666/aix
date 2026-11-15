@@ -171,6 +171,16 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   textChunk.append(resultCode.cloneNode(true));
   if(adapter.inspect().latestUser.operationId||adapter.hasDelivery('restored-result',expectedResult))throw Error('duplicate user control sources were accepted');cases++;
   restoredUser.remove();
+  for(const width of [360,768,1200]){
+    document.body.style.width=width+'px';document.body.style.maxWidth='100%';
+    answer.replaceChildren();answer.style.display='flex';
+    const article=document.createElement('article');article.style.flex='1';article.style.minWidth='0';article.textContent='Ответ модели с длинным текстом и разметкой. '.repeat(25);answer.append(article);
+    const before=article.getBoundingClientRect(),original=answer.innerHTML;
+    adapter.annotateContext();
+    const note=document.querySelector('[data-webcodex-context]'),after=article.getBoundingClientRect();
+    if(!note||note.previousElementSibling!==answer||answer.innerHTML!==original||Math.abs(before.width-after.width)>0.1||note.getBoundingClientRect().top<answer.getBoundingClientRect().bottom||note.scrollWidth>note.clientWidth)throw Error('context note changed the answer layout at width '+width);
+    adapter.annotateContext();if(document.querySelectorAll('[data-webcodex-context]').length!==1)throw Error('context note duplicated');cases++;
+  }
   const ownDraft=document.querySelector('textarea').value;let preserved=false;
   document.addEventListener('click',event=>{if(event.target===run){adapter.prepareSessionMessage(liveMarker);preserved=document.querySelector('textarea').value===ownDraft;}},true);
   if(!await adapter.submit(ownDraft)||!preserved)throw Error('Run capture modified the owned result');cases++;
@@ -188,5 +198,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:94');t.diagnostic('94 scenarios passed in installed Chrome, including exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
+  assert.equal(result,'PASS:97');t.diagnostic('97 scenarios passed in installed Chrome, including context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });

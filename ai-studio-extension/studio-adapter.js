@@ -603,14 +603,15 @@
     const model = recognized.filter(el => role(el) === 'model').pop();
     if (!model) return count;
     const label = `Текст сообщений: ≈ ${count} токенов (оценка; содержимое вложений не учтено)`;
-    const existing = allElements('[data-webcodex-context]', model)[0];
-    if (existing && text(existing) === label) return count;
-    if (existing) existing.remove();
+    for (const existing of allElements('[data-webcodex-context]')) existing.remove();
     const note = document.createElement('small');
     note.setAttribute('data-webcodex-context', 'true');
     note.textContent = label;
-    model.appendChild(note);
+    for (const [property,value] of Object.entries({display:'block',width:'100%','min-width':'0','box-sizing':'border-box','white-space':'normal','overflow-wrap':'anywhere','grid-column':'1 / -1',flex:'0 0 auto'}))note.style.setProperty(property,value);
+    // A sibling keeps the note out of the answer's flex/grid layout and parser source.
+    model.insertAdjacentElement('afterend',note);
     return count;
   };
+  if(document.querySelectorAll?.('[data-webcodex-context]').length)annotateContext();
   return { inspect, recoverReplySource, stage, submit, isSubmitControl, prepareSessionMessage, attachFiles, ownsDraft, releaseFiles, stageSystemInstructions, getSystemStageError: () => systemStageError, hasDelivery, deliveryTurns, cleanup, restoreCleanup, annotateContext };
 });

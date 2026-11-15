@@ -2,6 +2,7 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const stateEl = $('status'), errorEl = $('error');
+  $('gate-connection').hidden = true;
   const installedVersion = chrome.runtime.getManifest?.().version || '';
   if(installedVersion)$('extension-version').textContent='AI Studio · alpha '+installedVersion;
   let state = null, toolSignature = '', agentSignature = '', toolsInitialized = false;
@@ -52,10 +53,10 @@
     state = next;
     const session = next.session || {};
     const phaseNames = { idle: 'ожидает запуска', ready: 'готов', arming: 'подготовка', attaching_files:'прикрепляются файлы', waiting_model: 'ожидается ответ модели', recovering: 'проверяется результат операции', result_ready: 'результат готов к передаче', active: 'выполняется', running: 'выполняется', waiting_approval: 'ожидает подтверждения', paused: 'на паузе', stopped: 'остановлен', delivery_uncertain: 'передача результата не подтверждена', error: 'ошибка' };
-    const connectionName = next.transport === 'gate' ? 'Gate' : 'Локальный агент';
-    stateEl.textContent = `${session.demo || next.demoMode ? 'Демо режим · ' : ''}${connectionName} ${next.connected ? 'подключён' : 'не подключён'}${session.phase ? ` · сеанс: ${phaseNames[session.phase] || session.phase}` : ''}`;
+    const connectionName = 'Локальный агент';
+    stateEl.textContent = `${session.demo || next.demoMode ? 'Демо режим · ' : ''}${connectionName} ${next.connected && next.transport !== 'gate' ? 'подключён' : 'не подключён'}${session.phase ? ` · сеанс: ${phaseNames[session.phase] || session.phase}` : ''}`;
     $('transport-info').textContent = next.transport === 'local'
-      ? `Прямое соединение · агент ${next.agentVersion || 'версия не передана'} · Gate не используется`
+      ? `Прямое соединение · агент ${next.agentVersion || 'версия не передана'}`
       : next.localError ? `Локальный агент недоступен: ${next.localError}` : '';
     $('transport-info').hidden = !$('transport-info').textContent;
     const page=next.pageScript;
@@ -66,7 +67,9 @@
       : next.connected?'Нет связи со скриптом вкладки AI Studio. Откройте AI Studio или перезагрузите сохранённую вкладку.':'';
     $('page-script').hidden=!$('page-script').textContent;
     const saved = next.autoSettings || {};
-    renderChoices($('agents'), next.agents || [], 'agent');
+    const localAgents = next.transport === 'gate' ? [] : next.agents || [];
+    renderChoices($('agents'), localAgents, 'agent');
+    $('agents').hidden = !localAgents.length;
     const availableTools = next.tools || [];
     renderChoices($('tools'), [...availableTools, ...(saved.toolNames || []).filter(name => !availableTools.some(tool => tool.name === name)).map(name => ({ name, description: 'недоступен, ожидаю агента' }))], 'tool');
     if (!editedPreferences.has('consent') && typeof saved.consent === 'boolean') $('consent').checked = saved.consent;
@@ -100,7 +103,7 @@
     $('observer-status').hidden=!$('observer-status').textContent;
     const busy = connecting || next.connecting;
     $('connect').disabled = busy || (!!next.connected && next.transport !== 'local');
-    $('connect').textContent = busy ? 'Ожидается вход…' : next.transport === 'local' ? 'Настроить резерв Gate' : 'Подключить';
+    $('connect').textContent = busy ? 'Ожидается вход…' : 'Подключить';
     $('disconnect').disabled = busy || !next.connected;
     $('demo').disabled = busy || !!next.connected;
     $('arm').disabled = !next.connected || !['idle', 'stopped'].includes(session.phase) || !$('consent').checked;
@@ -160,6 +163,21 @@
   $('save-from-reply').addEventListener('click', () => act('bridge.saveFromReply'));
   $('run-from-reply').addEventListener('click', () => act('bridge.runFromReply'));
   $('stop').addEventListener('click', () => act('bridge.stop'));
+  $('allow-all').addEventListener('click', async () => {
+    for(const input of $('tools').querySelectorAll('input'))input.checked=true;
+    const fields={consent:'consent',automatic:'automatic',attachFiles:'attach-files',autoApprove:'auto-approve'};
+    for(const [field,id] of Object.entries(fields)){
+      $(id).checked=true;editedPreferences.add(field);
+    }
+    editedPreferences.add('toolNames');
+    $('hide-service').checked=true;
+    const preferences={agentId:selected($('agents'))[0]||state?.autoSettings?.agentId||'',toolNames:selected($('tools')),consent:true,automatic:true,attachFiles:true,autoApprove:true};
+    if(state){state.autoSettings={...state.autoSettings,...preferences};if(state.session)state.session.automatic=true;}
+    try{
+      render(await send('bridge.preferences',preferences));
+      render(await send('bridge.cleanupPreference',{enabled:true}));
+    }catch(error){showError(error);}
+  });
   function savePreferences(field) {
     editedPreferences.add(field);
     const savedTools = state?.autoSettings?.toolNames || [];

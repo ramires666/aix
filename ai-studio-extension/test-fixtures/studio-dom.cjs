@@ -41,6 +41,10 @@ class Node {
   dispatchEvent(event) { this.events.push(event); }
   click() { this.clicked = true; }
   appendChild(child) { return this.add(child); }
+  insertAdjacentElement(position,child) {
+    if(position!=='afterend'||!this.parent)return null;
+    child.parent=this.parent;this.parent.children.splice(this.parent.children.indexOf(this)+1,0,child);return child;
+  }
   add(child) { child.parent = this; this.children.push(child); return child; }
 }
 class Textarea extends Node {
@@ -64,6 +68,7 @@ function setup({ draft = '', extraEditors = 0, generating = false, spinnerClass 
   if (generating) run.add(new Node(spinnerClass ? 'div' : 'ms-stoppable-spinner', spinnerClass ? { class: 'stoppable-spinner' } : {}));
   const stop = new Node('button', { 'aria-label': russian ? 'Отмена' : 'Stop' });
   const root = new Node('document'); root.children = [wrapper, ...moreEditors, ...turns, ...(withoutRun ? [] : [run]), ...(generating ? [stop] : [])];
+  for(const child of root.children)child.parent=root;
   const document = { documentElement: new Node('html'), body: new Node('body'), createElement(tag) { return new Node(tag); }, defaultView: { InputEvent: class { constructor(type, init) { this.type = type; Object.assign(this, init); } } }, querySelectorAll(selector) { return root.querySelectorAll(selector); } };
   const location = { hostname, pathname: '/prompts/p1', search: '?x=2' };
   return { adapter: createAdapter(document, location), location, editor, wrapper, run, user, model, chunk, root, document };

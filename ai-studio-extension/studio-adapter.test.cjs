@@ -785,12 +785,26 @@ test('context annotation counts hidden turns and stays out of model text and rep
   state.adapter.cleanup({ turns: [], operationIds: ['op-1'] });
   const expected = Math.ceil((state.user.textContent.length + state.model.textContent.length) / 4);
   assert.equal(state.adapter.annotateContext(), expected);
-  const notes = state.model.querySelectorAll('[data-webcodex-context]');
+  const notes = state.root.querySelectorAll('[data-webcodex-context]');
   assert.equal(notes.length, 1);
   assert.equal(notes[0].textContent, `Текст сообщений: ≈ ${expected} токенов (оценка; содержимое вложений не учтено)`);
+  assert.equal(state.model.querySelectorAll('[data-webcodex-context]').length,0);
+  assert.equal(state.root.children[state.root.children.indexOf(state.model)+1],notes[0]);
+  assert.equal(notes[0].style.getPropertyValue('display'),'block');
   assert.equal(state.adapter.inspect().latestModel.text, 'answer');
   assert.equal(state.adapter.annotateContext(), expected);
-  assert.equal(state.model.querySelectorAll('[data-webcodex-context]').length, 1);
+  assert.equal(state.root.querySelectorAll('[data-webcodex-context]').length, 1);
+});
+
+test('context annotation removes legacy inline notes without changing answer content or layout styles',()=>{
+  const state=setup();
+  state.model.style.setProperty('display','flex');
+  const before=state.model.textContent;
+  state.model.add(new Node('small',{'data-webcodex-context':'true'},'old annotation'));
+  state.adapter.annotateContext();
+  assert.equal(state.model.textContent,before);
+  assert.equal(state.model.style.getPropertyValue('display'),'flex');
+  assert.equal(state.root.querySelectorAll('[data-webcodex-context]').length,1);
 });
 
 test('recognizes an empty editor with disabled Run and only clicks after input enables it', async () => {

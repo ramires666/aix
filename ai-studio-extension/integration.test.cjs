@@ -61,7 +61,8 @@ function harness(initial = saved(), tabBehavior = {}, initialLocalData = {}) {
   };
   const mcp = { createClient: options => WebCodexMCP.createClient({ ...options, fetchImpl: fetch }) };
   const context = { chrome, crypto: require('node:crypto').webcrypto, URL, URLSearchParams, TextEncoder, TextDecoder, Uint8Array, ArrayBuffer, JSON, Promise, Set, Map, Date:TestDate, AbortSignal, Math, Error, String, Object, Number, RegExp, console, btoa: s => Buffer.from(s, 'binary').toString('base64'), fetch, WebCodexProtocol, WebCodexSession:require('./session-state.js'), WebCodexAttachments:require('./attachments.js'), WebCodexMCP: mcp, importScripts() {}, setTimeout, clearTimeout };
-  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8'), context, { filename: 'background.js' });
+  // Keep exercising the retained remote implementation while this release is local-only.
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8').replace('const GATE_ENABLED = false;','const GATE_ENABLED = true;'), context, { filename: 'background.js' });
   const panel = { url: 'chrome-extension://test-id/panel.html' }, page = { url: 'https://aistudio.google.com/app/prompts/test', frameId: 0, tab: { id: 7 } };
   const message = (msg, sender = panel) => new Promise(resolve => { const async = listeners.message(msg, sender, resolve); if (async !== true) resolve(undefined); });
   const status = () => message({ type: 'bridge.status' });
