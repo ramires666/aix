@@ -1081,3 +1081,46 @@ test('opens a collapsed run settings panel before staging system instructions',a
   assert.equal(toggle.clicked,true);
   assert.ok(state.dialogs[0].editor.value.includes('Helper tools'));
 });
+
+test('finds system instruction controls by their text without decorative icon names',async()=>{
+  for(const roleButton of [false,true]){
+    const state=systemSetup();delete state.opener.attrs['aria-label'];
+    if(roleButton){state.opener.tag='div';state.opener.attrs.role='button';}
+    state.opener.add(new Node('mat-icon',{},'edit_note'));
+    state.opener.add(new Node('span',{},'System instructions'));
+    state.opener.add(new Node('span',{class:'material-symbols-outlined'},'chevron_right'));
+    if(roleButton){
+      state.opener.hidden=true;
+      const toggle=state.root.add(new Node('div',{role:'button'}));
+      toggle.add(new Node('mat-icon',{},'settings'));
+      toggle.add(new Node('span',{},'Toggle run settings panel'));
+      toggle.click=()=>{state.opener.hidden=false;};
+    }
+    assert.equal(await state.system('Helper tools'),true,state.adapter.getSystemStageError());
+    assert.ok(state.dialogs[0].editor.value.includes('Helper tools'));
+    assert.equal(state.editor.value,'chat draft');
+    assert.equal(state.run.clicked,undefined);
+  }
+});
+
+test('missing or duplicate system instruction controls fail safely with recovery guidance',async()=>{
+  const missing=setup({draft:'keep my task'});
+  assert.equal(await missing.adapter.stageSystemInstructions('Helper tools'),false);
+  assert.match(missing.adapter.getSystemStageError(),/Run settings/);
+  assert.match(missing.adapter.getSystemStageError(),/count=0/);
+  assert.equal(missing.editor.value,'keep my task');
+  assert.equal(missing.run.clicked,undefined);
+  const panel=missing.root.add(new Node('ms-system-instructions'));
+  const editor=panel.add(new Textarea('Keep my rules.'));
+  editor.attrs.placeholder='Optional tone and style instructions for the model';
+  assert.equal(await missing.adapter.stageSystemInstructions('Helper tools'),true);
+  assert.equal(editor.value,'Keep my rules.\n<!-- HELPER BEGIN -->\nHelper tools\n<!-- HELPER END -->');
+  assert.equal(missing.editor.value,'keep my task');
+
+  const duplicate=systemSetup();
+  duplicate.root.add(new Node('button',{'aria-label':'System instructions'}));
+  assert.equal(await duplicate.system('Helper tools'),false);
+  assert.match(duplicate.adapter.getSystemStageError(),/count=2/);
+  assert.equal(duplicate.dialogs.length,0);
+  assert.equal(duplicate.editor.value,'chat draft');
+});

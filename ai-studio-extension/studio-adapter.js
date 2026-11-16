@@ -451,8 +451,6 @@
   const stageSystemInstructions = async (value) => {
     systemStageError = '';
     const fail = reason => (systemStageError = reason, false);
-    const exactLabel = (el, choices) => [attr(el, 'aria-label'), attr(el, 'title'), text(el)]
-      .some(label => choices.includes(String(label || '').trim().toLowerCase()));
     const panels = () => {
       const known = elements('ms-system-instructions, [role="dialog"]').filter(panel =>
         panel.matches?.('ms-system-instructions') ||
@@ -474,18 +472,19 @@
     const alreadyOpen = panels();
     if (alreadyOpen.length === 1) panel = alreadyOpen[0];
     else if (!alreadyOpen.length) {
-      let openers = elements('button').filter(el => exactLabel(el, ['system instructions']));
+      let openers = elements('button, [role="button"]').filter(el => hasLabel(el, ['system instructions']));
       if(!openers.length){
-        const toggles=elements('button').filter(el=>exactLabel(el,['toggle run settings panel']));
+        const toggles=elements('button, [role="button"]').filter(el=>hasLabel(el,['toggle run settings panel']));
         if(toggles.length===1){
           toggles[0].click();
           for(let attempt=0;attempt<60&&!openers.length;attempt++){
             await wait();
-            openers=elements('button').filter(el=>exactLabel(el,['system instructions']));
+            openers=elements('button, [role="button"]').filter(el=>hasLabel(el,['system instructions']));
           }
         }
       }
-      if (openers.length !== 1) return fail(`System instructions opener not unique (count=${openers.length})`);
+      if (!openers.length) return fail('Не найдена кнопка System instructions. Откройте System instructions вручную в Run settings и повторите запуск сеанса (count=0)');
+      if (openers.length !== 1) return fail(`Найдено несколько кнопок System instructions. Оставьте открытым один редактор системных инструкций и повторите запуск сеанса (count=${openers.length})`);
       const before = new Set(alreadyOpen);
       openers[0].click();
       for (let attempt = 0; attempt <= 60; attempt++) {
@@ -590,7 +589,7 @@
     if (valueNow() !== next) { setValue(editor, current); return fail('System instruction write mismatch'); }
     if (!unchanged||titleChanged) {
       for (let attempt = 0; attempt <= 60; attempt++) {
-        const save = controls(panel).filter(el => exactLabel(el, ['save', 'done']));
+        const save = controls(panel).filter(el => hasLabel(el, ['save', 'done']));
         if (!save.length) break;
         if (save.length !== 1) { setValue(editor, current); return fail(`System Save ambiguous (count=${save.length})`); }
         if (!save[0].disabled && attr(save[0], 'aria-disabled') !== 'true') { save[0].click(); break; }

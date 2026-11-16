@@ -160,6 +160,22 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   systemBody.append(systemHeading,systemEditor);systemDialog.append(closeSystem,systemBody);document.body.append(systemDialog);
   if(!await adapter.stageSystemInstructions('Helper test rules')||systemDialog.isConnected||!systemEditor.value.includes('Preserve my rules.')||!systemEditor.value.includes('Helper test rules'))throw Error('system instructions dialog stayed open or lost user rules');cases++;
   }
+  for(const roleButton of [false,true]){
+    const opener=document.createElement(roleButton?'div':'button');
+    if(roleButton)opener.setAttribute('role','button');
+    const icon=document.createElement('mat-icon');icon.textContent='edit_note';
+    const caption=document.createElement('span');caption.textContent='System instructions';
+    const arrow=document.createElement('span');arrow.className='material-symbols-outlined';arrow.textContent='chevron_right';
+    opener.append(icon,caption,arrow);document.body.append(opener);
+    const systemDialog=document.createElement('ms-system-instructions'),systemEditor=document.createElement('textarea');
+    systemEditor.placeholder='Optional tone and style instructions for the model';systemEditor.value='Keep personal rules.';
+    const close=document.createElement('button');close.setAttribute('aria-label','Close');close.addEventListener('click',()=>systemDialog.remove());
+    systemDialog.append(systemEditor,close);opener.addEventListener('click',()=>document.body.append(systemDialog));
+    const draft=document.querySelector('ms-prompt-input-wrapper textarea').value;
+    if(!await adapter.stageSystemInstructions('Helper icon test')||systemDialog.isConnected||!systemEditor.value.includes('Keep personal rules.')||!systemEditor.value.includes('Helper icon test'))throw Error('system instructions opener with icons was not recognized: '+adapter.getSystemStageError());
+    if(document.querySelector('ms-prompt-input-wrapper textarea').value!==draft)throw Error('system instruction staging changed the chat draft');
+    opener.remove();cases++;
+  }
   const restoredUser=document.createElement('ms-chat-turn');restoredUser.setAttribute('data-turn-role','User');
   const fileCard=document.createElement('ms-prompt-chunk');fileCard.className='file-chunk';fileCard.textContent='Generated File [November 14].plain';
   const filePreview=document.createElement('pre');filePreview.textContent=JSON.stringify({type:'helper-result',operation_id:'file-preview'});fileCard.append(filePreview);
@@ -278,5 +294,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:103',output.slice(-3000));t.diagnostic('103 scenarios passed in installed Chrome, including accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
+  assert.equal(result,'PASS:105',output.slice(-3000));t.diagnostic('105 scenarios passed in installed Chrome, including system instruction buttons with icons and ARIA roles, accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });
