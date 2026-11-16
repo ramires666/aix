@@ -6,7 +6,7 @@
   window.__webcodexBridgeDispose?.();
   window.__webcodexBridgeLoaded = true;
   const adapter=WebCodexStudio.createAdapter(document,location);
-  const contentVersion='0.5.7';
+  const contentVersion='0.5.8';
   const pageInstance=Date.now()+'-'+Math.random();
   let sessionMarker='';
   let sessionId='', baselineText='', conversationKey='', lastText='', lastDelivered='', inFlight='', observerTimer=0, stopping=false, newChatPending=false, newChatRequestInFlight=false, attempted=new Set(), recoverTurn='', recoverTools=[], turnless=false, turnlessRecovery=false, observedUserText='', observedResultId='', observedContext='';
@@ -198,7 +198,7 @@
   window.__webcodexBridgeDispose=retire;
   chrome.runtime.onMessage.addListener((m,_sender,reply)=>{
     if(retired)return;
-    if(!m||!['studio.arm','studio.stage','studio.deliver','studio.snapshot','studio.disarm','studio.cleanup','studio.captureWrite','studio.captureCall','studio.readReply','studio.bindMarker','studio.cancelDelivery','studio.collapseCall','studio.collapseChat','studio.chatWidth'].includes(m.type)){reply({ok:false});return;}
+    if(!m||!['studio.arm','studio.stage','studio.deliver','studio.snapshot','studio.disarm','studio.cleanup','studio.captureWrite','studio.captureCall','studio.readReply','studio.bindMarker','studio.injectMarker','studio.cancelDelivery','studio.collapseCall','studio.collapseChat','studio.chatWidth'].includes(m.type)){reply({ok:false});return;}
     if(m.type==='studio.chatWidth'){
       if(!Number.isInteger(m.value)||m.value<0||m.value>100||m.value%10!==0){reply({ok:false,error:'Invalid chat width'});return;}
       chatWidth=m.value;adapter.setChatWidth?.(chatWidth);reply({ok:true});return;
@@ -213,6 +213,12 @@
     }
     if(!sessionId||m.sessionId!==sessionId){reply({ok:false,error:'Stale session'});return;}
     if(m.type==='studio.bindMarker'){sessionMarker=m.sessionMarker||'';reply({ok:true});return;}
+    if(m.type==='studio.injectMarker'){
+      const s=adapter.inspect();
+      if(checkInstructions||systemStagePending||sourceRecoveryPending||newChatPending||deliveryPending||!s.supported||s.generating||s.editingReply||m.bindingAddress&&s.chatAddress!==m.bindingAddress){reply({ok:false,error:'Дождитесь завершения ответа и проверки текущего чата'});return;}
+      const ok=adapter.prepareSessionMessage(sessionMarker,{force:true});
+      reply({ok,error:ok?undefined:'Не удалось вставить ID: проверьте поле сообщения и текущий сеанс'});return;
+    }
     if(m.type==='studio.collapseCall'){
       const model=adapter.inspect().latestModel;
       if(!model||model.sourceRevision!==m.sourceRevision||model.text!==m.text){reply({ok:false});return;}
@@ -264,7 +270,8 @@
     }
     if(m.type==='studio.snapshot'){const state=snapshot(m.operationId,false,m.expectedResultText);if(state.delivered&&turnless){observedResultId=m.operationId||observedResultId;}if(state.delivered&&(recoverTurn||turnlessRecovery)){const current=adapter.inspect(),model=current.latestModel;let valid=false;try{valid=!!model&&(!turnless||current.modelAfterUser!==false)&&!!WebCodexProtocol.parseCall(model.text,turnless?null:recoverTurn,recoverTools,{...model,sessionMarker,allowUnmarked:true});}catch{}if(turnless){recoverTurn='';turnlessRecovery=false;baselineText=valid?'':model?.text||'';lastText=valid?'':baselineText;if(valid){awaitingResponse=true;generationSeen=true;baselineModelText='';schedule();}}else if(valid)schedule();else{recoverTurn='';baselineText=model?.text||'';lastText=baselineText;}}reply(state);return;}
     if(m.type==='studio.deliver'){
-      const s=adapter.inspect();const state=snapshot();if(!s.supported||(!m.submit&&!s.editorEmpty)||s.generating||s.editingReply){reply({ok:false,attempted:false,...state});return;}
+      if(newChatPending){reply({ok:false,attempted:false,...snapshot(),error:'Открыт новый чат; старый результат в него не отправляется'});return;}
+      const s=adapter.inspect();const state=snapshot();if(!s.supported||(!m.submit&&!s.editorEmpty)||s.generating&&!s.controlsPending||s.editingReply){reply({ok:false,attempted:false,...state,error:s.editingReply?'Закройте редактор ответа AI Studio и нажмите «Передать результат»':s.generating?'Дождитесь окончания ответа AI Studio и нажмите «Передать результат»':s.error||'Проверьте поле ввода AI Studio; результат сохранён в панели'});return;}
       if(checkInstructions){reply({ok:false,attempted:false,...state,error:'Переход между чатами: результат сохранён, отправка ожидает проверки'});return;}
       const wrapped=`\`\`\`helper-result\n${m.text}\n\`\`\``;
       if(!m.submit){const ok=adapter.stage(wrapped);reply({ok,attempted:false,...state});return;}
@@ -279,13 +286,13 @@
       if(m.attachments?.length){
         attachmentPending=true;
         const revision=deliveryRevision;
-        const current=()=>sessionId===deliverySession&&navigationRevision===deliveryNavigation&&deliveryRevision===revision;
+        const current=()=>sessionId===deliverySession&&navigationRevision===deliveryNavigation&&deliveryRevision===revision&&!newChatPending;
         reply({ok:true,attempted:false,pending:true,...state});
         (async()=>{
           let attempted=false;
           try{
             const files=await attachmentFiles(m,current);
-            if(!current()||!adapter.stage(wrapped))throw Error('Поле ввода изменилось; прикрепление остановлено');
+            if(!current()||!adapter.stage(wrapped,{recover:true}))throw Error('Поле ввода изменилось; прикрепление остановлено');
             const stillOwned=()=>current()&&adapter.ownsDraft(wrapped)&&!adapter.inspect().generating;
             const attached=await adapter.attachFiles(files,{key:operationId,isCurrent:stillOwned});
             if(!attached.ok)throw Error(attached.error);
@@ -293,7 +300,7 @@
             const intent=await send('studio.deliveryStarted',{operationId});
             if(!intent?.accepted||!stillOwned())throw Error('Отправка остановлена до нажатия Run');
             attempted=true;
-            const ok=await adapter.submit(wrapped,stillOwned);
+            const ok=await adapter.submit(wrapped,stillOwned,{recover:true});
             if(ok){lastDelivered=m.text;if(turnless)allowedFollowupId=operationId;}
             const proof=snapshot(operationId,false,m.text);
             if(proof.delivered)adapter.releaseFiles?.(operationId);
@@ -304,9 +311,9 @@
       }
       (async()=>{
         try{
-          const ok=await adapter.submit(wrapped,()=>sessionId===deliverySession&&navigationRevision===deliveryNavigation);
+          const ok=await adapter.submit(wrapped,()=>sessionId===deliverySession&&navigationRevision===deliveryNavigation&&!newChatPending,{recover:true});
           if(ok){lastDelivered=m.text;if(turnless)allowedFollowupId=operationId;}
-          const proof=snapshot(operationId,false,m.text);reply({ok,attempted:ok,confirmed:ok&&proof.delivered,...proof});
+          const proof=snapshot(operationId,false,m.text);reply({ok,attempted:ok,confirmed:ok&&proof.delivered,...proof,...(!ok?{error:'Результат не отправлен. Если в поле ваш текст, сохраните его и очистите поле. Если там результат Helper, оставьте его без изменений и нажмите «Передать результат». Проверьте, что кнопка Run доступна.'}:{})});
         }catch(e){reply({ok:false,attempted:true,...snapshot(),error:'Delivery outcome is unknown'});}
         finally{deliveryPending=false;}
       })();

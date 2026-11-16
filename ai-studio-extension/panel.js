@@ -98,6 +98,7 @@
     $('disconnect').disabled = busy || !next.connected;
     $('demo').disabled = busy || !!next.connected;
     const activeSession = !!session.phase && !['idle', 'stopped'].includes(session.phase);
+    $('session-marker').textContent = activeSession && session.sessionMarker ? session.sessionMarker : 'Нет активного сеанса';
     const agent = (next.agents || []).find(item => String(item.id) === String(session.agentId));
     const sessionConnected = activeSession && next.connected && next.transport !== 'gate' && agent?.online !== false;
     const buttonVersion = next.agentVersion?.match(/^\d+\.\d+\.\d+/)?.[0] || next.agentVersion || 'версия не передана';
@@ -107,6 +108,7 @@
     renderPermissionToggle();
     $('tools-next-session').hidden = !session.phase || ['idle', 'stopped'].includes(session.phase);
     $('save-instructions').disabled = !next.connected || !session.agentId;
+    $('inject-marker').disabled = !next.connected || !$('consent').checked || !session.sessionMarker || session.paused || !!session.resumeBlocked || !['waiting_model','ready'].includes(session.phase) || !!(session.pendingCall||session.operationKey||session.operationId||session.resultText);
     $('approve').disabled = session.phase !== 'waiting_approval' || !session.pendingCall || session.paused;
     $('deliver').disabled = !session.resultText || session.phase !== 'result_ready' || session.paused;
     $('pause').disabled = !session.phase || ['idle', 'stopped'].includes(session.phase) || session.paused;
@@ -153,6 +155,12 @@
     finally { sessionChanging = false; render(state); }
   });
   $('save-instructions').addEventListener('click', () => act('bridge.instructions', { submit: false }));
+  $('inject-marker').addEventListener('click', async () => {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await act('bridge.injectMarker', { tabId: tab?.id });
+    } catch (error) { showError(error); }
+  });
   $('approve').addEventListener('click', () => act('bridge.approve'));
   $('deliver').addEventListener('click', () => act('bridge.deliver', { submit: true }));
   $('retry-reply').addEventListener('click', () => act('bridge.retryReply'));

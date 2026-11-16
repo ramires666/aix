@@ -37,6 +37,12 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   assert.equal(init.serverInfo.version, release.webcodexRelease.agent);
   const endpoint = client.endpoint, agentIdentity = client.agentIdentity;
   assert.equal(init.studioOperations.lookupByKey,true);
+  assert.equal(init.studioSession.marker,true);
+  const marker='a'.repeat(32);
+  await client.setSessionMarker(marker);
+  await client.initialize();await client.setSessionMarker(marker);
+  assert.equal(logs.split('ID активного сеанса: '+marker).length-1,2);
+  await client.setSessionMarker('');
   assert.equal((await client.getOperationByKey('never-sent')).status,'not_found');
   const tools = await client.listTools();
   assert.ok(tools.some(tool => tool.name === 'exec_command'));
@@ -72,6 +78,10 @@ test('compiled local agent discovers, executes once and reconnects without Gate 
   lossy.close();
   const read = await client.createOperation({ key: 'local-read', name: 'read_file', arguments: { path: file }, agentId: 'local' });
   assert.match(JSON.stringify(read), /local works/);
+  await new Promise(resolve=>setTimeout(resolve,50));
+  assert.ok(logs.includes('read_file — Читаю файл'));
+  assert.ok(logs.includes('read_file — Прочитано строк: 1'));
+  assert.equal(logs.includes('[source=local]'),false);
   assert.equal((await fetch(endpoint + '/studio/rpc', { method: 'POST', headers: { Origin: 'https://aistudio.google.com', 'Content-Type': 'application/json', 'X-WebCodex-Extension': 'lgiihodklblifecheadnfjkaokmmfikk' }, body: '{}' })).status, 403);
   const content='<!doctype html>\n'+('const x = `code "Courier New" \\path \u044f \ud83d\ude00`;\n'.repeat(600000))+'<!-- end -->';
   assert.ok(Buffer.byteLength(content)>10*1024*1024);

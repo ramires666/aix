@@ -46,6 +46,24 @@ test('service JSON preference reflects state and sends both checkbox values', as
   assert.deepEqual(p.messages.filter(x => x.type === 'bridge.cleanupPreference').map(x => x.enabled), [false, true]);
 });
 
+test('manual chat ID button targets the active tab and is disabled without an available session',async()=>{
+  const p=createPanel(),session={phase:'waiting_model',sessionMarker:'a'.repeat(32),tabId:1};
+  const base={connected:true,autoSettings:{consent:true},session,tools:[],agents:[]};
+  await p.update(base);assert.equal(p.get('inject-marker').disabled,false);
+  assert.equal(p.get('session-marker').textContent,session.sessionMarker);
+  await p.click('inject-marker');
+  assert.equal(p.messages.at(-1).type,'bridge.injectMarker');assert.equal(p.messages.at(-1).tabId,1);
+  for(const changes of [{connected:false},{autoSettings:{consent:false}},...[
+    {phase:'idle'},{phase:'stopped'},{paused:true},{resumeBlocked:true},{sessionMarker:''},{pendingCall:{}},{operationKey:'pending'},{operationId:'pending'},{resultText:'pending'}
+  ].map(change=>({session:{...session,...change}}))]){
+    await p.update({...base,...changes});assert.equal(p.get('inject-marker').disabled,true,JSON.stringify(changes));
+  }
+  await p.update(base);p.fail();await p.click('inject-marker');
+  assert.equal(p.get('error').textContent,'Action failed');
+  await p.update({...base,session:{...session,phase:'stopped'}});
+  assert.equal(p.get('session-marker').textContent,'Нет активного сеанса');
+});
+
 test('quick controls follow the version and local agent while allow-all persists every checkbox',async()=>{
   const html=fs.readFileSync(require.resolve('./panel.html'),'utf8');
   assert.ok(html.indexOf('id="extension-version"')<html.indexOf('id="arm"'));

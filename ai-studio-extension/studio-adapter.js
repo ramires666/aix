@@ -341,34 +341,38 @@
     if (editor.dispatchEvent && EventCtor) editor.dispatchEvent(new EventCtor('input', { bubbles: true, inputType: 'insertText', data: String(value) }));
     return editorValue(editor) === String(value);
   };
-  const stage = (value) => {
+  const stage = (value,{recover=false}={}) => {
     const state = inspect();
     const candidateEditors = editors();
-    if (!state.supported || state.editingReply || (state.generating && !(state.controlsPending && !state.latestModel)) || candidateEditors.length !== 1) return false;
-    if (!state.editorEmpty) return ownedDraft?.value === String(value) && editorValue(candidateEditors[0]) === String(value);
+    if (!state.supported || state.editingReply || (state.generating && !(state.controlsPending && (recover || !state.latestModel))) || candidateEditors.length !== 1) return false;
+    if (!state.editorEmpty) {
+      if (editorValue(candidateEditors[0]) !== String(value) || !recover && ownedDraft?.value !== String(value)) return false;
+      ownedDraft = { value: String(value) };
+      return true;
+    }
     const staged = setEditorValue(candidateEditors[0],value);
     if (staged) ownedDraft = { value: String(value) };
     return staged;
   };
-  const prepareSessionMessage = marker => {
+  const prepareSessionMessage = (marker,{force=false}={}) => {
     if(!/^[a-f0-9]{32}$/.test(marker))return false;
     const state=inspect(),current=editors();
-    if(!state.supported||state.generating&&!state.controlsPending||current.length!==1)return false;
-    if(state.chatMarkers.includes(marker))return true;
+    if(!state.supported||state.editingReply||state.generating&&!state.controlsPending||current.length!==1)return false;
+    if(!force&&state.chatMarkers.includes(marker))return true;
     const value=editorValue(current[0]);
-    if(!value)return false;
-    if(ownedDraft?.value===value)return true;
+    if(!value&&!force)return false;
+    if(ownedDraft?.value===value)return !force;
     const prefix='[Helper session '+marker+']\nSession marker for this chat is '+marker+'. Follow the Helper system instructions.\n[/Helper session]\n\n';
     if(value.startsWith(prefix))return true;
     return setEditorValue(current[0],prefix+value);
   };
-  const submit = (value, isCurrent = () => true) => {
+  const submit = (value, isCurrent = () => true, {recover=false}={}) => {
     if (pendingSubmit) return Promise.resolve(false);
     const draft = String(value);
     if (!isCurrent()) return Promise.resolve(false);
     const editor = editors()[0];
     const ownsDraft = ownedDraft?.value === draft && editor && editorValue(editor) === draft;
-    if (!ownsDraft && !stage(draft)) return Promise.resolve(false);
+    if (!ownsDraft && !stage(draft,{recover})) return Promise.resolve(false);
     const promise = (async () => {
       for (let attempt = 0; attempt <= 60; attempt++) {
         const state = inspect(), currentEditors = editors();

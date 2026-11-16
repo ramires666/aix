@@ -127,6 +127,7 @@ async function initializeLocal(){
   const next=WebCodexLocal.createClient(pinned?{endpoint:s.localEndpoint||'',agentIdentity:s.localAgentIdentity||''}:{});
   try{const init=await next.initialize();const tools=(await next.listTools()).filter(t=>!t.name.startsWith('browser_')),agents=await next.listAgents();
     localClient=next;client=next;state.connected=true;state.transport='local';state.localError='';state.localEndpoint=next.endpoint;state.localAgentIdentity=next.agentIdentity;state.agentVersion=init?.serverInfo?.version||'';state.agents=agents;state.tools=tools;state.gateInstructions=init?.instructions||'';
+    if(pinned&&s.sessionMarker)await next.setSessionMarker(s.sessionMarker);
     if(pinned){s.localEndpoint=next.endpoint;s.localAgentIdentity=next.agentIdentity;}
     const {bridgeAuto:previous={}}=await chrome.storage.local.get('bridgeAuto');
     if(agents.length===1&&String(agents[0].id??agents[0].name)==='local'&&previous.enabled){const safe=tools.map(t=>t.name),names=(previous.toolNames||[]).filter(n=>safe.includes(n));state.autoSettings={...previous,gateAgentId:previous.gateAgentId||(previous.agentId&&previous.agentId!=='local'?previous.agentId:''),agentId:'local',toolNames:names};await saveAutoSettings(state.autoSettings);}
@@ -264,6 +265,16 @@ async function command(m) {
       updateAutoStatus();
       break;
     case 'bridge.instructions': if(m.submit!==false) throw Error('submit must be false');await stageInstructions();await save();break;
+    case 'bridge.injectMarker': {
+      const s=state.session;
+      if(!state.connected||state.autoSettings?.consent!==true||s.paused||s.resumeBlocked||!['waiting_model','ready'].includes(s.phase)||!/^[a-f0-9]{32}$/.test(s.sessionMarker||'')||s.pendingCall||s.operationKey||s.operationId||s.resultText)throw Error('Запустите сеанс и дождитесь завершения текущей операции');
+      if(!Number.isInteger(m.tabId)||m.tabId!==s.tabId)throw Error('Откройте вкладку AI Studio с текущим сеансом');
+      const tab=await chrome.tabs.get(m.tabId);
+      if(new URL(tab.url||'').origin!=='https://aistudio.google.com')throw Error('Откройте вкладку Google AI Studio');
+      const result=await chrome.tabs.sendMessage(s.tabId,{type:'studio.injectMarker',sessionId:s.sessionId,bindingAddress:s.bindingAddress||''});
+      if(!result?.ok)throw Error(result?.error||'Не удалось вставить ID чата');
+      break;
+    }
     case 'bridge.approve': await approve();break;
     case 'bridge.deliver': if(m.submit!==true) throw Error('submit must be true');await deliver(true);break;
     case 'bridge.retryReply':
@@ -418,12 +429,18 @@ async function autoStart(sender,m){
   await migrateAutoSetup();settings=(await chrome.storage.local.get('bridgeAuto')).bridgeAuto||settings;state.autoSettings=settings;if(settings)settings.autoApprove=!!settings.autoApprove;
   const status=updateAutoStatus(settings);
   if(!settings?.enabled||!settings.consent||!state.connected||demo||!refreshed||status!=='Готово')return {accepted:false};
+  const newBlankPage=m.blankChat===true&&m.pageInstance&&m.pageInstance!==s.pageInstance&&/^\/(?:app\/)?prompts\/(?:new_chat|new)\/?$/.test(new URL(sender.url).pathname);
+  if((m.conversationReplaced||newBlankPage)&&m.supported===true&&m.editorEmpty===true&&s.tabId===sender.tab.id&&!s.userPaused){
+    await clearSession();
+    try{await arm({...settings,tabId:sender.tab.id});state.session.pageInstance=m.pageInstance;await save();return {accepted:true};}
+    catch(e){return {accepted:false};}
+  }
   const freshBlank=m.blankChat===true&&m.supported===true&&m.editorEmpty===true&&s.tabId===sender.tab.id&&m.pageInstance&&s.pageInstance!==m.pageInstance;
   const freshSaved=m.hasHistory===true&&m.supported===true&&s.tabId===sender.tab.id&&m.pageInstance&&s.pageInstance!==m.pageInstance;
   if(m.pageInstance&&s.pageInstance===m.pageInstance&&s.tabId===sender.tab.id&&!m.conversationReplaced)return {accepted:true};
   if(s.tabId===sender.tab.id&&m.pageInstance&&s.pageInstance!==m.pageInstance&&recoverableDelivery(s))return reattachDelivery(sender,m);
   if(s.pendingCall||s.operationKey||s.phase==='delivery_uncertain'||s.resultText||s.operationId){
-    if(s.tabId===sender.tab.id){s.paused=true;s.resumeBlocked=true;s.phase='paused';s.error='Page restarted with an unfinished operation; inspect its outcome before starting a new session';await save();}
+    if(s.tabId===sender.tab.id){if(s.phase!=='paused')s.pausedPhase=s.phase;s.paused=true;s.resumeBlocked=true;s.phase='paused';s.error='Страница перезагружена до завершения операции. Сначала нужно проверить её результат.';await save();}
     return {accepted:false};
   }
   if(s.tabId!==null&&s.tabId!==sender.tab.id&&!['idle','stopped'].includes(s.phase)){
@@ -436,12 +453,17 @@ async function autoStart(sender,m){
   try{await arm({...settings,tabId:sender.tab.id});state.session.pageInstance=m.pageInstance;await save();return {accepted:true};}
   catch(e){return {accepted:false};}
 }
+function unsentDelivery(s){
+  const legacyBlocked=s.phase==='paused'&&s.error==='Page restarted with an unfinished operation; inspect its outcome before starting a new session'&&['completed','failed'].includes(s.executionStatus);
+  return !!(!s.userPaused&&(['result_ready','attaching_files'].includes(s.phase)||s.phase==='paused'&&['result_ready','attaching_files'].includes(s.pausedPhase)||legacyBlocked));
+}
 function recoverableDelivery(s){
   const recoverablePause=s.phase==='paused'&&!s.userPaused&&(s.reasonCode==='conversation_changed'||s.pausedPhase!=='delivery_uncertain'&&s.reasonCode==='page_unavailable'||!s.resumeBlocked&&s.reasonCode==='legacy_size_limit');
-  return !!(s.resultText&&s.nextTurn&&s.operationId&&(s.phase==='delivery_uncertain'||s.phase==='attaching_files'||s.phase==='result_ready'&&!!s.attachments?.length||recoverablePause));
+  return !!(s.resultText&&s.nextTurn&&s.operationId&&(s.phase==='delivery_uncertain'||unsentDelivery(s)||recoverablePause));
 }
 async function reattachDelivery(sender,m){
   const s=state.session;
+  const unsentResult=unsentDelivery(s);
   const unsentFiles=(['result_ready','attaching_files'].includes(s.phase)||s.paused&&['result_ready','attaching_files'].includes(s.pausedPhase))&&!!s.attachments?.length;
   const unsentSizeResult=s.phase==='paused'&&!s.userPaused&&!s.resumeBlocked&&s.reasonCode==='legacy_size_limit';
   const retainUnsent=()=>{s.phase='paused';s.paused=true;s.resumeBlocked=false;s.reasonCode='legacy_size_limit';s.error='Result exceeds 32 KiB; reduce the tool output before delivery.';};
@@ -449,7 +471,7 @@ async function reattachDelivery(sender,m){
     const armed=await armPage(sender.tab.id,{type:'studio.arm',sessionId:s.sessionId,sessionMarker:s.sessionMarker,turnless:!!s.turnless,recover:true,recoverTurn:s.nextTurn,toolNames:s.toolNames.map(n=>state.tools.find(t=>t.name===n)).filter(Boolean)});
     if(!armed?.supported){s.error='AI Studio page is not ready; delivery remains uncertain';if(unsentSizeResult)retainUnsent();await save();return {accepted:false};}
     const matchesAddress=!s.bindingAddress||armed.chatAddress===s.bindingAddress;
-    const matchesMarker=!s.sessionMarker||armed.chatMarkers?.includes(s.sessionMarker);
+    const matchesMarker=!s.sessionMarker||armed.chatMarkers?.includes(s.sessionMarker)||unsentResult&&sender.tab.id===s.tabId&&s.bindingAddress&&matchesAddress&&!armed.chatMarkers?.length;
     const identified=s.bindingAddress&&s.sessionMarker;
     if(!matchesAddress||!matchesMarker||sender.tab.id!==s.tabId&&!identified)throw Error('Откройте исходный сохранённый чат: адрес и маркер должны совпадать');
     if(sender.tab.id!==s.tabId){
@@ -461,9 +483,9 @@ async function reattachDelivery(sender,m){
     s.pageInstance=m.pageInstance;s.paused=false;s.userPaused=false;s.resumeBlocked=false;s.phase='delivery_uncertain';s.pausedPhase='';s.error='Checking whether the saved result reached this chat';await save();
     const chk=await chrome.tabs.sendMessage(sender.tab.id,{type:'studio.snapshot',sessionId:s.sessionId,operationId:s.operationId,expectedResultText:s.resultText});
     if(!chk?.supported){s.error='AI Studio page is not ready; delivery remains uncertain';if(unsentSizeResult)retainUnsent();await save();return {accepted:!unsentSizeResult};}
-    if(chk.delivered){completeDelivery();await save();}else if(unsentFiles){s.phase='result_ready';s.paused=false;s.error='';s.notice='Файл сохранён. Нажмите «Передать результат», чтобы прикрепить его в текущем чате.';await save();}else if(unsentSizeResult){s.phase='result_ready';s.paused=false;s.error='';await save();if(s.automatic)try{await deliver(true);}catch(e){s.error=String(e.message||e);await save();}}else{s.error='Result is not visible yet; waiting for delivery proof. It will not be sent again.';await save();}
+    if(chk.delivered){completeDelivery();await save();}else if(unsentFiles||unsentResult){s.phase='result_ready';s.paused=false;s.deliveryStatus='not_sent';s.effect=null;s.reasonCode='';s.error='';s.notice='Результат сохранён. Нажмите «Передать результат» для отправки в текущий чат.';await save();}else if(unsentSizeResult){s.phase='result_ready';s.paused=false;s.error='';await save();if(s.automatic)try{await deliver(true);}catch(e){s.error=String(e.message||e);await save();}}else{s.error='Result is not visible yet; waiting for delivery proof. It will not be sent again.';await save();}
     return {accepted:true};
-  }catch(e){s.phase=unsentFiles?'paused':'delivery_uncertain';s.paused=unsentFiles;s.resumeBlocked=false;if(unsentFiles){s.pausedPhase='result_ready';s.reasonCode='page_unavailable';}s.error='Could not check delivery in AI Studio: '+String(e.message||e);if(unsentSizeResult)retainUnsent();await save();return {accepted:false};}
+  }catch(e){s.phase=unsentFiles||unsentResult?'paused':'delivery_uncertain';s.paused=unsentFiles||unsentResult;s.resumeBlocked=false;if(unsentFiles||unsentResult){s.pausedPhase='result_ready';s.reasonCode='page_unavailable';}s.error='Не удалось проверить доставку в AI Studio: '+String(e.message||e);if(unsentSizeResult)retainUnsent();await save();return {accepted:false};}
 }
 async function armPage(tabId,message){
   try{return await chrome.tabs.sendMessage(tabId,message);}catch(e){
@@ -495,7 +517,7 @@ async function bindChatMarker(snapshot,{select=false}={}){
   const changed=s.sessionMarker!==marker;
   s.sessionMarker=marker;s.bindingAddress=boundAddress;
   await save();
-  if(changed||select)await chrome.tabs.sendMessage(s.tabId,{type:'studio.bindMarker',sessionId:s.sessionId,sessionMarker:marker});
+  if(changed||select){await chrome.tabs.sendMessage(s.tabId,{type:'studio.bindMarker',sessionId:s.sessionId,sessionMarker:marker});if(state.transport==='local')await localClient?.setSessionMarker?.(marker);}
 }
 async function arm(m) {
   if(!['idle','stopped'].includes(state.session.phase))throw Error('Stop the active session before arming another one');
@@ -513,7 +535,7 @@ async function arm(m) {
     state.session.conversationKey=snap.conversationKey;state.session.phase='waiting_model';await bindChatMarker(snap,{select:true});await stageInstructions();await save();
   } catch(e){await chrome.tabs.sendMessage(m.tabId,{type:'studio.disarm',sessionId:state.session.sessionId}).catch(()=>{});state.session.phase='stopped';state.session.error=String(e.message||e);await save();throw e;}
 }
-async function clearSession(){const s=state.session;if(s?.tabId&&s.sessionId)await chrome.tabs.sendMessage(s.tabId,{type:'studio.disarm',sessionId:s.sessionId}).catch(()=>{});state.session={phase:'idle',agentId:'',toolNames:[],automatic:false,paused:false,turn:'',instructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:null};await save();}
+async function clearSession(){const s=state.session;if(s?.tabId&&s.sessionId)await chrome.tabs.sendMessage(s.tabId,{type:'studio.disarm',sessionId:s.sessionId}).catch(()=>{});if(state.transport==='local')await localClient?.setSessionMarker?.('').catch(()=>{});state.session={phase:'idle',agentId:'',toolNames:[],automatic:false,paused:false,turn:'',instructions:'',pendingCall:null,resultText:'',error:'',count:0,tabId:null};await save();}
 async function stageInstructions({ensureOnly=false}={}){const s=state.session;const selected=s.toolNames.map(n=>state.tools.find(t=>t.name===n)).filter(Boolean);const systemText=WebCodexProtocol.buildSystemInstructions({agentId:s.agentId,tools:selected,turnless:!!s.turnless,replyFormat:s.sessionMarker?'v2':'v1',instructions:[state.gateInstructions,s.customInstructions].filter(Boolean).join('\n\n')});const text=ensureOnly||s.turnless?'':WebCodexProtocol.buildSessionInstructions({turn:s.turn});s.instructions=[systemText,text].filter(Boolean).join('\n\n');const r=await chrome.tabs.sendMessage(s.tabId,{type:'studio.stage',sessionId:s.sessionId,systemText,text,...(ensureOnly?{ensureOnly:true}:{})});if(!r?.ok)throw Error(r?.error||'Could not stage instructions without changing existing text');}
 async function studioMessage(m,sender) {
   const s=state.session;if(m.sessionId!==s.sessionId)throw Error('Stale Studio session');
@@ -548,7 +570,7 @@ async function studioMessage(m,sender) {
   if(!m.conversationReplaced&&s.phase==='paused'&&s.reasonCode==='conversation_changed'&&recoverableDelivery(s)&&(m.type==='studio.call'||m.supported)){
     s.phase='delivery_uncertain';s.paused=false;s.resumeBlocked=false;s.pausedPhase='';s.error='Checking whether the saved result reached this chat';
   }
-  if(m.type==='studio.snapshot'||m.type==='studio.tick'){if(!m.conversationReplaced&&m.supported&&s.sessionMarker&&(m.chatMarkers||[]).includes(s.sessionMarker))await bindChatMarker(m);if(m.conversationReplaced||!m.supported){if(m.conversationReplaced&&!s.userPaused&&!s.pendingCall&&!s.operationKey&&!s.resultText&&!s.operationId&&s.phase!=='delivery_uncertain'){const restarted=await autoStart(sender,{pageInstance:s.pageInstance,conversationReplaced:true});if(restarted.accepted)return restarted;}if(s.phase!=='paused')s.pausedPhase=s.phase;s.paused=true;s.phase='paused';s.resumeBlocked=true;s.reasonCode=m.reasonCode||WebCodexSession.legacyReason(m.error)||'page_unavailable';s.error=m.error||'AI Studio session is unavailable';await save();return {accepted:true};}if(!s.paused&&s.phase==='delivery_uncertain'&&typeof m.deliveredOperationId==='string'&&!!m.deliveredOperationId&&m.deliveredOperationId===(s.operationId||s.operationKey)){completeDelivery();await save();}await recover();return {accepted:true,conversationKey:s.conversationKey};}
+  if(m.type==='studio.snapshot'||m.type==='studio.tick'){if(!m.conversationReplaced&&m.supported&&s.sessionMarker&&(m.chatMarkers||[]).includes(s.sessionMarker))await bindChatMarker(m);if(m.conversationReplaced||!m.supported){if(m.conversationReplaced&&!s.userPaused&&(m.supported&&m.editorEmpty===true||!s.pendingCall&&!s.operationKey&&!s.resultText&&!s.operationId&&s.phase!=='delivery_uncertain')){const restarted=await autoStart(sender,{...m,pageInstance:s.pageInstance});if(restarted.accepted)return restarted;}if(s.phase!=='paused')s.pausedPhase=s.phase;s.paused=true;s.phase='paused';s.resumeBlocked=true;s.reasonCode=m.reasonCode||WebCodexSession.legacyReason(m.error)||'page_unavailable';s.error=m.error||'AI Studio session is unavailable';await save();return {accepted:true};}if(!s.paused&&s.phase==='delivery_uncertain'&&typeof m.deliveredOperationId==='string'&&!!m.deliveredOperationId&&m.deliveredOperationId===(s.operationId||s.operationKey)){completeDelivery();await save();}await recover();return {accepted:true,conversationKey:s.conversationKey};}
     if(m.type==='studio.call'){
     let toolCall=false;
     if(s.paused)return {accepted:false};
@@ -650,7 +672,7 @@ async function deliver(submit,{automatic=false,revision:deliveryPermission=autom
   let r;try{r=await chrome.tabs.sendMessage(s.tabId,{type:'studio.deliver',sessionId:s.sessionId,text:s.resultText,submit,...(attachments.length?{operationId:s.operationId||s.operationKey,attachments}:{})});}
   catch{throw Error('Delivery status is unknown; do not send again');}
   if(!r?.supported){if(!r?.attempted){s.phase='result_ready';await save();}throw Error('AI Studio session is unavailable; delivery is blocked');}
-  if(!r?.ok){if(!r?.attempted){s.phase='result_ready';await save();}throw Error(r?.error||(r?.attempted?'Delivery status is unknown; do not send again':'AI Studio draft could not be safely delivered'));}
+  if(!r?.ok){if(!r?.attempted){s.phase='result_ready';s.deliveryStatus='not_sent';s.effect=null;await save();}throw Error(r?.error||(r?.attempted?'Исход отправки неизвестен; сначала проверьте чат':'Не удалось отправить результат. Проверьте поле ввода и кнопку Run в AI Studio, затем нажмите «Передать результат».'));}
   if(r.pending)return;
   if(!submit){s.phase='result_ready';await save();return;}
   if(r.confirmed){completeDelivery(deliveryOperationId);await save();}
@@ -666,5 +688,6 @@ async function stop(){
       if(result?.isError===true)s.error='Command cancellation was rejected by Gate.';
     } catch(e){s.error='Command cancellation could not be confirmed: '+String(e.message||e);}
   }
+  if(state.transport==='local')await localClient?.setSessionMarker?.('').catch(()=>{});
   transitionSession({type:'stop'});await save();
 }

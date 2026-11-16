@@ -224,6 +224,49 @@ test('a reload before posting retains cached files and waits for explicit delive
   assert.equal(descriptor.data,undefined);assert.equal(h.localData[descriptor.artifactKey],'ZmlsZQ==');
 });
 
+test('reloading an unsent text result restores delivery, including the legacy restart block, without executing again',async()=>{
+  const marker='a'.repeat(32),address='/prompts/original';
+  for(const blocked of [false,true])for(const delivered of [false,true]){
+    const initial=saved(blocked?'paused':'result_ready');
+    Object.assign(initial.session,{paused:blocked,resumeBlocked:blocked,executionStatus:'completed',deliveryStatus:blocked?'intent_saved':'not_sent',error:blocked?'Page restarted with an unfinished operation; inspect its outcome before starting a new session':'',sessionMarker:marker,bindingAddress:address,pageInstance:'old',operationId:'op-1',operationKey:'saved-key',nextTurn:'next',resultText:'saved text',pendingCall:{name:'exec_command'}});
+    const h=harness(initial,{sendMessage:async(_id,msg)=>msg.type==='studio.arm'?{supported:true,chatAddress:address,chatMarkers:[]}:msg.type==='studio.snapshot'?{supported:true,delivered}:{ok:true}},{bridgeAuto:{enabled:true,consent:true,agentId:'agent-1',toolNames:['read_file'],automatic:true}});
+    await h.status();
+    assert.equal((await h.message({type:'studio.hello',pageInstance:'new'},h.page)).accepted,true);
+    const state=(await h.status()).state.session;
+    assert.equal(state.phase,delivered?'waiting_model':'result_ready');assert.equal(state.paused,false);assert.equal(state.resumeBlocked,false);
+    assert.equal(h.createCount,0);assert.equal(h.deliveryCount,0);
+    if(!delivered){assert.equal(state.resultText,'saved text');assert.match(state.notice,/Передать результат/);}
+  }
+});
+
+test('a confirmed empty new chat replaces the marker and clears old pending tasks without sending or rerunning them',async()=>{
+  for(const phase of ['result_ready','recovering','delivery_uncertain','waiting_approval','paused']){
+    const initial=saved(phase);Object.assign(initial.session,{sessionMarker:'a'.repeat(32),pageInstance:'page',paused:phase==='paused',resumeBlocked:phase==='paused',pendingCall:{name:'read_file'},operationId:'old-op',operationKey:'old-key',nextTurn:'next',resultText:'old result',replyError:{message:'old error'}});
+    const h=harness(initial,{}, {bridgeAuto:{enabled:true,consent:true,agentId:'agent-1',toolNames:['read_file'],automatic:true}});
+    await h.status();
+    const reply=await h.message({type:'studio.snapshot',sessionId:'session-1',conversationReplaced:true,supported:true,editorEmpty:true},h.page);
+    assert.equal(reply.accepted,true);
+    const state=(await h.status()).state.session;
+    assert.equal(state.phase,'waiting_model',phase);assert.notEqual(state.sessionMarker,'a'.repeat(32));assert.notEqual(state.sessionId,'session-1');
+    assert.equal(state.pendingCall,null);assert.equal(state.resultText,'');assert.equal(state.operationKey,undefined);assert.equal(state.replyError,undefined);
+    assert.equal(h.createCount,0);assert.equal(h.deliveryCount,0);
+  }
+});
+
+test('opening a new blank chat on a fresh page clears old tasks, while reloading the original saved chat retains them',async()=>{
+  for(const isNew of [true,false]){
+    const initial=saved('result_ready');Object.assign(initial.session,{sessionMarker:'a'.repeat(32),bindingAddress:'/prompts/original',pageInstance:'old',operationId:'old-op',nextTurn:'next',resultText:'old result'});
+    const h=harness(initial,{snapshotDelivered:false,sendMessage:async(_id,msg)=>msg.type==='studio.arm'?{supported:true,chatAddress:'/prompts/original',chatMarkers:['a'.repeat(32)]}:msg.type==='studio.snapshot'?{supported:true,delivered:false}:{ok:true}},{bridgeAuto:{enabled:true,consent:true,agentId:'agent-1',toolNames:['read_file'],automatic:true}});
+    await h.status();
+    const page={...h.page,url:'https://aistudio.google.com/prompts/'+(isNew?'new_chat':'original')};
+    assert.equal((await h.message({type:'studio.hello',pageInstance:'new',supported:true,blankChat:true,editorEmpty:true},page)).accepted,true);
+    const state=(await h.status()).state.session;
+    assert.equal(state.resultText,isNew?'':'old result');assert.equal(state.phase,isNew?'waiting_model':'result_ready');
+    if(isNew)assert.notEqual(state.sessionMarker,'a'.repeat(32));
+    assert.equal(h.createCount,0);assert.equal(h.deliveryCount,0);
+  }
+});
+
 test('resuming paused files rearms the page and checks delivery before another transfer',async()=>{
   for(const pausedPhase of ['result_ready','attaching_files']){
     for(const delivered of [false,true]){

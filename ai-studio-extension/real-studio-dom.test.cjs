@@ -73,6 +73,11 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   }
   userChunk.append(paragraph);user.append(userHeader,userChunk);
   if(adapter.inspect().chatMarkers.join(',')!==liveMarker)throw Error('rendered user header or BR hid the session marker');cases++;
+  const manualEditor=document.querySelector('textarea');manualEditor.value='My next request';
+  if(!adapter.prepareSessionMessage(liveMarker,{force:true})||!manualEditor.value.startsWith('[Helper session '+liveMarker+']')||!manualEditor.value.endsWith('My next request'))throw Error('manual marker did not preserve the request in an existing chat');
+  const manualDraft=manualEditor.value;
+  if(!adapter.prepareSessionMessage(liveMarker,{force:true})||manualEditor.value!==manualDraft)throw Error('manual marker was duplicated');
+  manualEditor.value='';cases++;
   for(const tag of ['pre','code','div'])for(const br of [false,true])for(const body of ['','line\\n','line\\r\\n']){
     answer.replaceChildren();
     const source=document.createElement(tag);if(tag==='div')source.setAttribute('role','code');
@@ -294,5 +299,5 @@ test('real Chrome DOM preserves raw attachments across rendered code widget boun
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',resolve);});
   assert.equal(code,0);
   const result=/<output id="check">([^<]*)<\/output>/.exec(output)?.[1];
-  assert.equal(result,'PASS:105',output.slice(-3000));t.diagnostic('105 scenarios passed in installed Chrome, including system instruction buttons with icons and ARIA roles, accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
+  assert.equal(result,'PASS:106',output.slice(-3000));t.diagnostic('106 scenarios passed in installed Chrome, including manual marker reinsertion, system instruction buttons with icons and ARIA roles, accepted Helper-call collapse with stable source identity and manual re-expansion, collapsed-result proof retention, context-note geometry, exact edit-source recovery, delivery sources, owned Run capture, upload resumption, scoped acknowledgement and nested dialog close');
 });

@@ -43,6 +43,30 @@ test('session context stays isolated across tabs and preserves extension-owned r
   assert.equal(result.editor.value,'```helper-result\n{}\n```');
 });
 
+test('manual session context can be reinserted into an empty draft or an existing request without sending',()=>{
+  const marker='a'.repeat(32),state=setup({empty:true});
+  state.root.add(new Node('ms-chat-turn',{'data-turn-role':'User'},'[Helper session '+marker+']\nEarlier request'));
+  for(const request of ['', '  Повтори задачу\r\nбез изменений  ']){
+    state.editor.value=request;
+    assert.equal(state.adapter.prepareSessionMessage(marker,{force:true}),true);
+    const staged=state.editor.value;
+    assert.ok(staged.startsWith('[Helper session '+marker+']\n'));
+    assert.ok(staged.endsWith('\n\n'+request));
+    assert.equal(state.adapter.prepareSessionMessage(marker,{force:true}),true);
+    assert.equal(state.editor.value,staged);
+  }
+  assert.equal(state.run.clicked,undefined);
+  const owned=setup({empty:true});owned.adapter.stage('```helper-result\n{}\n```');
+  assert.equal(owned.adapter.prepareSessionMessage(marker,{force:true}),false);
+  assert.equal(owned.editor.value,'```helper-result\n{}\n```');
+  for(const options of [{generating:true},{extraEditors:1},{hostname:'example.com'}]){
+    const blocked=setup({...options,draft:'keep'});
+    assert.equal(blocked.adapter.prepareSessionMessage(marker,{force:true}),false);
+    assert.equal(blocked.editor.value,'keep');
+  }
+  assert.equal(state.adapter.prepareSessionMessage('invalid',{force:true}),false);
+});
+
 test('source blocks preserve exact raw bytes, provenance and stable revisions',()=>{
   const state=setup();state.chunk.remove();
   const widget=state.model.children[0].add(new Node('ms-code-block'));
@@ -960,6 +984,21 @@ test('aborts if the staged draft changes or the caller disarms while waiting', a
   armed = false;
   assert.equal(await movedSubmit, false);
   assert.equal(disarmed.run.clicked, undefined);
+});
+
+test('delivery waits for Run to return after a completed reply and recovers only an identical saved draft',async()=>{
+  const value='```helper-result\n{"operation_id":"saved"}\n```';
+  const state=setup();state.run.hidden=true;
+  assert.equal(state.adapter.inspect().controlsPending,true);
+  const pending=state.adapter.submit(value,()=>true,{recover:true});
+  await new Promise(resolve=>setTimeout(resolve,80));state.run.hidden=false;
+  assert.equal(await pending,true);assert.equal(state.editor.value,value);
+  const restored=setup({draft:value});
+  assert.equal(restored.adapter.stage(value),false,'ordinary staging never adopts a user draft');
+  assert.equal(await restored.adapter.submit(value,()=>true,{recover:true}),true);
+  const edited=setup({draft:value+' user edits'});
+  assert.equal(await edited.adapter.submit(value,()=>true,{recover:true}),false);
+  assert.equal(edited.editor.value,value+' user edits');assert.equal(edited.run.clicked,undefined);
 });
 
 test('waits through transient Run removal and rejects competing or stale submits', async () => {

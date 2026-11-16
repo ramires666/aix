@@ -22,6 +22,26 @@ function harness(stored={}, failInitialize=false, localStore={}, clientOverride=
   return {listeners,data,sent,chrome,tabMessages};
 }
 function message(h,msg,sender){return new Promise(resolve=>{const async=h.listeners.message(msg,sender,resolve);if(async!==true)resolve(undefined);});}
+test('manual marker injection targets only the active session and preserves permissions and pending work',async()=>{
+  const session={phase:'waiting_model',sessionId:'s1',sessionMarker:'a'.repeat(32),tabId:7,toolNames:['read_file'],bindingAddress:'/prompts/current'};
+  const panel={url:'chrome-extension://test-id/panel.html'},inject={type:'bridge.injectMarker',tabId:7};
+  function create(changes={},consent=true){return harness({webcodexState:{connected:true,demoMode:true,session:{...session,...changes}}},false,{bridgeAuto:{consent}});}
+  const h=create(),reply=await message(h,inject,panel);
+  assert.equal(reply.ok,true);assert.deepEqual(reply.state.session.toolNames,['read_file']);
+  assert.equal(h.tabMessages.length,1);
+  assert.equal(h.tabMessages[0][0],7);
+  assert.deepEqual(JSON.parse(JSON.stringify(h.tabMessages[0][1])),{type:'studio.injectMarker',sessionId:'s1',bindingAddress:'/prompts/current'});
+  assert.equal((await message(h,{...inject,tabId:8},panel)).ok,false);
+  h.chrome.tabs.get=async()=>({url:'https://example.com/'});
+  assert.equal((await message(h,inject,panel)).ok,false);
+  for(const changes of [{phase:'idle'},{phase:'stopped'},{paused:true},{resumeBlocked:true},{sessionMarker:''},{pendingCall:{}},{operationKey:'pending'},{operationId:'pending'},{resultText:'pending'}]){
+    const blocked=create(changes);assert.equal((await message(blocked,inject,panel)).ok,false);
+    assert.equal(blocked.tabMessages.length,0);
+  }
+  assert.equal((await message(create({},false),inject,panel)).ok,false);
+  const failed=create();failed.chrome.tabs.sendMessage=async()=>({ok:false,error:'Editor unavailable'});
+  assert.equal((await message(failed,inject,panel)).error,'Editor unavailable');
+});
 test('chat width changes work while idle and persist as validated global preference',async()=>{
   const localStore={chatWidth:40},h=harness({},false,localStore),panel={url:'chrome-extension://test-id/panel.html'};
   const restored=await message(h,{type:'bridge.status'},panel);assert.equal(restored.state.chatWidth,40);

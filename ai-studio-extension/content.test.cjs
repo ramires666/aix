@@ -72,7 +72,7 @@ function harness({manualClock=false,chatWidth=0}={}) {
       const control=new Node('button',{'aria-label':button.getAttribute?.('aria-label')||''},button.innerText||button.textContent||'');
       return submitControls.isSubmitControl(control);
     },
-    prepareSessionMessage:marker=>{preparedMarkers.push(marker);return true;},
+    prepareSessionMessage:(marker,options)=>{preparedMarkers.push(marker);return options?.force?state.prepareMarkerOK!==false:true;},
     ownsDraft:value=>staged[staged.length-1]===value,
     attachFiles:async(files,options)=>{uploaded.push(files);return uploadHandler?uploadHandler(files,options):{ok:options.isCurrent()};},
     releaseFiles(){},
@@ -135,6 +135,48 @@ test('current Run keyboard labels prepare the chat marker before the first reque
     h.run(label);
     assert.deepEqual(h.preparedMarkers,[marker],label);
   }
+});
+
+test('manual marker injection requires the live chat, rejects busy editors and never submits',async()=>{
+  const h=harness(),marker='a'.repeat(32);
+  const inject={type:'studio.injectMarker',sessionId:'s1',bindingAddress:'/prompts/current'};
+  assert.equal((await h.send(inject)).ok,false);
+  await h.send({type:'studio.arm',sessionId:'s1',sessionMarker:marker,turnless:true});
+  h.state.chatAddress='/prompts/current';
+  assert.equal((await h.send(inject)).ok,true);
+  assert.deepEqual(h.preparedMarkers,[marker]);
+  assert.equal((await h.send({...inject,sessionId:'old'})).ok,false);
+  for(const changes of [{generating:true},{editingReply:true},{supported:false},{chatAddress:'/prompts/other'}]){
+    const previous={...h.state};Object.assign(h.state,changes);
+    assert.equal((await h.send(inject)).ok,false);
+    Object.assign(h.state,previous);
+  }
+  assert.deepEqual(h.preparedMarkers,[marker]);
+  h.state.prepareMarkerOK=false;
+  assert.equal((await h.send(inject)).ok,false);
+  assert.equal(h.submitted.length,0);assert.equal(h.staged.length,0);
+  assert.equal(h.sent.some(msg=>msg.type==='studio.call'),false);
+});
+
+test('a result can be delivered during a transient Run transition without rerunning the tool',async()=>{
+  const h=harness();await h.send({type:'studio.arm',sessionId:'s1'});
+  h.state.generating=true;h.state.controlsPending=true;
+  const text=JSON.stringify({type:'helper-result',v:1,operation_id:'saved',name:'exec_command',result:{ok:true}});
+  const response=await h.send({type:'studio.deliver',sessionId:'s1',text,submit:true});
+  assert.equal(response.ok,true);assert.equal(h.submitted.length,1);
+  assert.equal(h.sent.some(message=>message.type==='studio.call'),false);
+});
+
+test('opening a new chat cancels a pending result before Run and blocks further old deliveries',async()=>{
+  const h=harness();await h.send({type:'studio.arm',sessionId:'s1',turnless:true});
+  h.setSubmitHandler(async(_text,isCurrent)=>{
+    h.click({target:{closest:()=>({getAttribute:name=>name==='aria-label'?'New chat':'',innerText:''})}});
+    return isCurrent();
+  });
+  const delivery={type:'studio.deliver',sessionId:'s1',text:JSON.stringify({type:'helper-result',v:1,operation_id:'old',name:'exec_command',result:{ok:true}}),submit:true};
+  assert.equal((await h.send(delivery)).ok,false);
+  const blocked=await h.send(delivery);assert.equal(blocked.ok,false);assert.match(blocked.error,/новый чат/);
+  assert.equal(h.submitted.length,0);
 });
 
 test('delivery waits for async Run readiness and aborts after disarm', async () => {
